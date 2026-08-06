@@ -4,24 +4,327 @@
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
-type VirtualMachineSpec struct{}
+// ResourceName identifies a VM resource type.
+// +kubebuilder:validation:Enum=cpu;memory
+type ResourceName string
 
-type VirtualMachineStatus struct{}
+const (
+	// ResourceCPU is the number of virtual CPUs, in cores.
+	ResourceCPU ResourceName = "cpu"
+	// ResourceMemory is the amount of RAM, in bytes (e.g. "8Gi").
+	ResourceMemory ResourceName = "memory"
+)
+
+// VMConditionType identifies a condition on a VirtualMachine.
+type VMConditionType = string
+
+const (
+	// ConditionTypeScheduled is set by Cortex after each scheduling operation.
+	// status=Unknown: scheduling in-flight.
+	// status=True: scheduling succeeded, one or multiple candidates found.
+	// status=False: scheduling failed, see reason and message.
+	ConditionTypeScheduled VMConditionType = "Scheduled"
+
+	// ConditionTypeRunning is set by the VM operator when the VM domain is executing on a hypervisor.
+	// status=True: domain running, including during live migration or resize.
+	// status=False: domain paused, shut off, crashed, or not found.
+	// status=Unknown: exporter cannot reach the host.
+	ConditionTypeRunning VMConditionType = "Running"
+
+	// ConditionTypeMigrating is set by the VM operator during a live migration.
+	// status=True: migration in progress or aborting.
+	// status=False: migration completed, rolled back, or failed.
+	// status=Unknown: VM visible on multiple hosts, state unclear.
+	ConditionTypeMigrating VMConditionType = "Migrating"
+
+	// ConditionTypeResizing is set by the VM operator during a resize operation.
+	// status=True: resize in progress or being reverted.
+	// status=False: resize completed, reverted, or failed.
+	// status=Unknown: resize state unclear.
+	ConditionTypeResizing VMConditionType = "Resizing"
+
+	// ConditionTypeNovaInSync is set by the VM operator to record if the libvirt-observed state is consistent with what Nova reports.
+	// status=True: host and state consistent.
+	// status=False: mismatch detected — see reason and message.
+	// status=Unknown: not yet checked.
+	ConditionTypeNovaInSync VMConditionType = "NovaInSync"
+)
+
+// Reasons for ConditionTypeRunning.
+const (
+	ConditionReasonRunningShutoff  = "Shutoff"
+	ConditionReasonRunningCrashed  = "Crashed"
+	ConditionReasonRunningPaused   = "Paused"
+	ConditionReasonRunningNotFound = "NotFound"
+)
+
+// Reasons for ConditionTypeMigrating.
+const (
+	ConditionReasonMigratingOngoing    = "Ongoing"
+	ConditionReasonMigratingAborting   = "Aborting"
+	ConditionReasonMigratingCompleted  = "Completed"
+	ConditionReasonMigratingRolledBack = "RolledBack"
+	ConditionReasonMigratingFailed     = "Failed"
+)
+
+// Reasons for ConditionTypeResizing.
+const (
+	ConditionReasonResizingOngoing   = "Ongoing"
+	ConditionReasonResizingReverting = "Reverting"
+	ConditionReasonResizingCompleted = "Completed"
+	ConditionReasonResizingReverted  = "Reverted"
+	ConditionReasonResizingFailed    = "Failed"
+)
+
+// Reasons for ConditionTypeNovaInSync.
+const (
+	ConditionReasonNovaInSyncHostMismatch  = "HostMismatch"
+	ConditionReasonNovaInSyncStateMismatch = "StateMismatch"
+	ConditionReasonNovaInSyncUnreachable   = "NovaUnreachable"
+)
+
+// Reasons for ConditionTypeScheduled.
+const (
+	// Operation type reasons — set on both success and failure of a scheduling call.
+	ConditionReasonScheduledInitialPlacement = "InitialPlacement"
+	ConditionReasonScheduledLiveMigration    = "LiveMigration"
+	ConditionReasonScheduledEvacuation       = "Evacuation"
+	ConditionReasonScheduledResize           = "Resize"
+
+	ConditionReasonScheduledNoHostFound = "NoHostFound"
+	ConditionReasonScheduledTimeout     = "Timeout"
+	ConditionReasonScheduledError       = "Error"
+)
+
+// VMSpec defines the desired state of a VirtualMachine.
+// Written by the Cortex placement API at scheduling time and updated on lifecycle events.
+//
+// metadata.name holds the Nova instance UUID (e.g. "63ed64e2-27a2-4b70-9b5c-833c2a285d66").
+type VMSpec struct {
+	// InstanceName is the human-readable Nova instance name, used for logging and debugging only.
+	// +kubebuilder:validation:Optional
+	InstanceName string `json:"instanceName,omitempty"`
+
+	// CreatedAt is the Nova instance creation timestamp.
+	// +kubebuilder:validation:Optional
+	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
+
+	// Region is the cloud region this VM is placed in.
+	// +kubebuilder:validation:Required
+	Region string `json:"region"`
+
+	// AZ is the Nova availability zone the VM was scheduled into.
+	// +kubebuilder:validation:Required
+	AZ string `json:"az"`
+
+	// Cluster identifies the compute cluster this VM resides in.
+	// +kubebuilder:validation:Required
+	Cluster string `json:"cluster"`
+
+	// TargetHost is the hypervisor this VM has been placed on.
+	// +kubebuilder:validation:Optional
+	TargetHost *HostRef `json:"targetHost,omitempty"`
+
+	// NovaRequestSpec captures the Nova scheduling request parameters for this VM.
+	// +kubebuilder:validation:Required
+	NovaRequestSpec NovaRequestSpec `json:"novaRequestSpec"`
+
+	// Cortex holds fields owned by the Cortex scheduler.
+	// +kubebuilder:validation:Optional
+	Cortex *CortexSpec `json:"cortex,omitempty"`
+}
+
+// NovaRequestSpec captures the Nova scheduling request for this VM.
+type NovaRequestSpec struct {
+	// Resources describes the compute resources requested by the VM.
+	// Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="\"cpu\" in self && \"memory\" in self",message="both cpu and memory must be specified"
+	// +kubebuilder:validation:XValidation:rule="self.all(k, quantity(self[k]).isGreaterThan(quantity(\"0\")))",message="all resources must be greater than 0"
+	Resources map[ResourceName]resource.Quantity `json:"resources"`
+
+	// Ownership identifies the OpenStack project and user owning this VM.
+	// +kubebuilder:validation:Required
+	Ownership Ownership `json:"ownership"`
+
+	// Flavor is the Nova flavor used for this VM.
+	// +kubebuilder:validation:Required
+	Flavor Flavor `json:"flavor"`
+
+	// Image is the Glance image used to boot the VM.
+	// +kubebuilder:validation:Required
+	Image Image `json:"image"`
+
+	// Groups lists Nova server group references this VM belongs to.
+	// +kubebuilder:validation:Optional
+	Groups []GroupRef `json:"groups,omitempty"`
+
+	// InstanceGroup holds anti/affinity group membership for this VM.
+	// Used by affinity/anti-affinity filters to enforce constraints across concurrent placements.
+	// +kubebuilder:validation:Optional
+	InstanceGroup *InstanceGroup `json:"instanceGroup,omitempty"`
+}
+
+// Ownership identifies the OpenStack project and user that own a VM.
+type Ownership struct {
+	// Project is the OpenStack project (tenant) UUID.
+	// +kubebuilder:validation:Required
+	Project string `json:"project"`
+
+	// User is the OpenStack user UUID that created the VM.
+	// +kubebuilder:validation:Optional
+	User string `json:"user,omitempty"`
+}
+
+// Flavor describes the Nova flavor of a VM.
+// Fields mirror the Nova flavor object sent to Cortex at scheduling time.
+type Flavor struct {
+	// Name is the Nova flavor name.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// FlavorID is the Nova flavor UUID.
+	// +kubebuilder:validation:Optional
+	FlavorID string `json:"flavorID,omitempty"`
+
+	// RootGB is the root disk size in gigabytes.
+	// +kubebuilder:validation:Optional
+	RootGB uint64 `json:"rootGB,omitempty"`
+
+	// EphemeralGB is the ephemeral disk size in gigabytes.
+	// +kubebuilder:validation:Optional
+	EphemeralGB uint64 `json:"ephemeralGB,omitempty"`
+
+	// ExtraSpecs holds flavor extra specs, e.g. hypervisor type, custom traits, hardware requirements.
+	// +kubebuilder:validation:Optional
+	ExtraSpecs map[string]string `json:"extraSpecs,omitempty"`
+}
+
+// Image describes the Glance image used to boot a VM.
+type Image struct {
+	// UUID is the Glance image UUID.
+	// +kubebuilder:validation:Required
+	UUID string `json:"uuid"`
+
+	// Properties holds arbitrary image properties from Glance (e.g. os_type, hw_machine_type).
+	// +kubebuilder:validation:Optional
+	Properties map[string]string `json:"properties,omitempty"`
+}
+
+// GroupRef is a reference to a Nova server group kind.
+type GroupRef struct {
+	// Kind identifies the group type, e.g. "InstanceGroup".
+	// +kubebuilder:validation:Required
+	Kind string `json:"kind"`
+}
+
+// InstanceGroup holds Nova instance group membership for a VM.
+type InstanceGroup struct {
+	// UUID is the Nova instance group UUID.
+	// +kubebuilder:validation:Required
+	UUID string `json:"uuid"`
+
+	// Policy is the scheduling policy, e.g. "anti-affinity", "soft-anti-affinity".
+	// +kubebuilder:validation:Required
+	Policy string `json:"policy"`
+}
+
+// CortexSpec holds fields owned by the Cortex scheduler on the VM CRD.
+type CortexSpec struct {
+	// CandidateTargetHosts is the list of hypervisor names Cortex selected as placement candidates
+	// for the current operation. Cleared once the VM is confirmed on a host.
+	// +kubebuilder:validation:Optional
+	CandidateTargetHosts []HostRef `json:"candidateTargetHosts,omitempty"`
+}
+
+// HostRef is a reference to a hypervisor host
+type HostRef struct {
+	// Name is the compute host name.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Cluster is the compute cluster this host belongs to.
+	// +kubebuilder:validation:Required
+	Cluster string `json:"cluster"`
+}
+
+// VMStatus defines the observed state of a VirtualMachine.
+type VMStatus struct {
+	// Host is the compute host this VM is currently running on.
+	// +kubebuilder:validation:Optional
+	Host *HostRef `json:"host,omitempty"`
+
+	// Nova holds the last known state of this VM as reported by Nova.
+	// +kubebuilder:validation:Optional
+	Nova *NovaStatus `json:"nova,omitempty"`
+
+	// LibvirtExporter holds state reported by the libvirt exporter for this VM.
+	// Fields are TBD — to be defined with the libvirt exporter team.
+	// +kubebuilder:validation:Optional
+	LibvirtExporter *LibvirtExporterStatus `json:"libvirtExporter,omitempty"`
+
+	// Conditions holds standard Kubernetes conditions for this VM.
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:Optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// NovaStatus holds the last known Nova instance state for a VM.
+type NovaStatus struct {
+	// RunningState is the Nova instance status (e.g. ACTIVE, SHUTOFF, MIGRATING, ERROR, BUILD).
+	// +kubebuilder:validation:Optional
+	RunningState string `json:"runningState,omitempty"`
+
+	// LastSyncTime is the timestamp of the last successful sync from Nova.
+	// +kubebuilder:validation:Optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+}
+
+// LibvirtExporterStatus holds state reported by the libvirt exporter for a VM.
+// ObservedHosts is populated when the VM is visible on multiple hosts, e.g. during live migration.
+type LibvirtExporterStatus struct {
+	// ObservedHosts maps hypervisor hostnames to their observed VM state.
+	// +kubebuilder:validation:Optional
+	ObservedHosts map[string]LibvirtHostInfo `json:"observedHosts,omitempty"`
+}
+
+// LibvirtHostInfo holds the libvirt-reported state of a VM on a specific host.
+// Fields are TBD — to be defined with the libvirt exporter team.
+type LibvirtHostInfo struct{}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=vm
+// +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.flavor.name",name="Flavor",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.resources.cpu",name="CPU",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.resources.memory",name="Memory",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.host.name",name="Host",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].status",name="Running",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].reason",name="State",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].status",name="NovaInSync",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.nova.runningState",name="NovaState",type="string"
+// +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date"
+// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.ownership.project",name="Project",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Migrating\")].status",name="Migrating",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Resizing\")].status",name="Resizing",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Scheduled\")].reason",name="Scheduled",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].reason",name="NovaInSyncReason",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.nova.lastSyncTime",name="NovaLastSync",type="date",priority=1
 
 // VirtualMachine tracks a Nova VM from initial placement through its full lifetime.
 type VirtualMachine struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   VirtualMachineSpec   `json:"spec,omitempty"`
-	Status VirtualMachineStatus `json:"status,omitempty"`
+	Spec   VMSpec   `json:"spec,omitempty"`
+	Status VMStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -34,5 +337,8 @@ type VirtualMachineList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&VirtualMachine{}, &VirtualMachineList{})
+	SchemeBuilder.Register(func(scheme *runtime.Scheme) error {
+		scheme.AddKnownTypes(GroupVersion, &VirtualMachine{}, &VirtualMachineList{})
+		return nil
+	})
 }
