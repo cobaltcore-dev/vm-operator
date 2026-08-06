@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright SAP SE or an SAP affiliate company and cobaltcore-dev contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.tgz
+
+build/**
+
+# Test binary, built with `go test -c`
+*.test
+
+bin/
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+vendor/**
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Kubernetes Generated files - skip generated files, except for vendored files
+!vendor/**/zz_generated.*
+
+# exclude dot files
+.*
+# except
+!.dockerignore
+!.editorconfig
+!.gitignore
+!.github
+!.gitkeep
+!.golangci.yaml
+!.license-scan-overrides.jsonl
+!.license-scan-rules.json
+!.claude/agents
+!.claude/commands
