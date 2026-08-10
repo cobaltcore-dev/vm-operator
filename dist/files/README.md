@@ -1,0 +1,1 @@
+This directory is for auto-generated files from controller-gen, included in the helm chart.
