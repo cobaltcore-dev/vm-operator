@@ -109,9 +109,8 @@ spec:
               cortex:
                 description: Cortex captures the desired state of this VM in Cortex.
                 properties:
-                  candidateTargetHosts:
-                    description: |-
-                      CandidateTargetHosts is the list of hypervisor names Cortex selected as placement candidates
+                  hostCandidates:
+                    description: HostCandidates is the set of hosts Cortex has considered
                       for the most recent scheduling operation of the VM.
                     items:
                       description: HostRef is a reference to a hypervisor host.

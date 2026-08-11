@@ -230,10 +230,9 @@ type InstanceGroup struct {
 
 // CortexSpec captures the desired state of this VM in Cortex.
 type CortexSpec struct {
-	// CandidateTargetHosts is the list of hypervisor names Cortex selected as placement candidates
-	// for the most recent scheduling operation of the VM.
+	// HostCandidates is the set of hosts Cortex has considered for the most recent scheduling operation of the VM.
 	// +kubebuilder:validation:Optional
-	CandidateTargetHosts []HostRef `json:"candidateTargetHosts,omitempty"`
+	HostCandidates []HostRef `json:"hostCandidates,omitempty"`
 }
 
 // HostRef is a reference to a hypervisor host.
