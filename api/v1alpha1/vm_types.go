@@ -10,7 +10,6 @@ import (
 )
 
 // ResourceName identifies a VM resource type.
-// +kubebuilder:validation:Enum=cpu;memory
 type ResourceName string
 
 const (
@@ -20,7 +19,24 @@ const (
 	ResourceMemory ResourceName = "memory"
 )
 
-// VMConditionType identifies a condition on a VirtualMachine.
+// Label keys set on VirtualMachine objects.
+const (
+	// LabelRegion is the cloud region. Immutable.
+	LabelRegion = "cobaltcore.cloud/region"
+	// LabelAZ is the availability zone. Immutable.
+	LabelAZ = "cobaltcore.cloud/az"
+
+	// LabelTargetHost is the host where to place the VM on (spec).
+	LabelTargetHost = "cobaltcore.cloud/target-host"
+	// LabelHost is the host the VM is currently observed on (status).
+	LabelHost = "cobaltcore.cloud/host"
+
+	// LabelTargetCluster is the cluster where to place the VM in (spec).
+	LabelTargetCluster = "cobaltcore.cloud/target-cluster"
+	// LabelCluster is the cluster the VM is currently observed in (status).
+	LabelCluster = "cobaltcore.cloud/cluster"
+)
+
 type VMConditionType = string
 
 const (
@@ -103,9 +119,32 @@ const (
 
 // VMSpec defines the desired state of a VirtualMachine.
 // Written by the Cortex placement API at scheduling time and updated on lifecycle events.
-//
-// metadata.name holds the Nova instance UUID (e.g. "63ed64e2-27a2-4b70-9b5c-833c2a285d66").
 type VMSpec struct {
+	// Region is the cloud region this VM is placed in.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
+	Region string `json:"region"`
+
+	// AZ is the Nova availability zone the VM was scheduled into.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="az is immutable"
+	AZ string `json:"az"`
+
+	// TargetHost is the compute host ref of the hypervisor where this VM should be placed.
+	// +kubebuilder:validation:Optional
+	TargetHost *HostRef `json:"targetHost,omitempty"`
+
+	// Nova captures the last known desired state of this VM inside the OpenStack Nova service.
+	// +kubebuilder:validation:Required
+	Nova NovaSpec `json:"nova"`
+
+	// Cortex captures the desired state of this VM in Cortex.
+	// +kubebuilder:validation:Optional
+	Cortex *CortexSpec `json:"cortex,omitempty"`
+}
+
+// NovaSpec captures the Nova instance metadata and scheduling request for this VM.
+type NovaSpec struct {
 	// InstanceName is the human-readable Nova instance name, used for logging and debugging only.
 	// +kubebuilder:validation:Optional
 	InstanceName string `json:"instanceName,omitempty"`
@@ -114,33 +153,6 @@ type VMSpec struct {
 	// +kubebuilder:validation:Optional
 	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
 
-	// Region is the cloud region this VM is placed in.
-	// +kubebuilder:validation:Required
-	Region string `json:"region"`
-
-	// AZ is the Nova availability zone the VM was scheduled into.
-	// +kubebuilder:validation:Required
-	AZ string `json:"az"`
-
-	// Cluster identifies the compute cluster this VM resides in.
-	// +kubebuilder:validation:Required
-	Cluster string `json:"cluster"`
-
-	// TargetHost is the hypervisor this VM has been placed on.
-	// +kubebuilder:validation:Optional
-	TargetHost *HostRef `json:"targetHost,omitempty"`
-
-	// NovaRequestSpec captures the Nova scheduling request parameters for this VM.
-	// +kubebuilder:validation:Required
-	NovaRequestSpec NovaRequestSpec `json:"novaRequestSpec"`
-
-	// Cortex holds fields owned by the Cortex scheduler.
-	// +kubebuilder:validation:Optional
-	Cortex *CortexSpec `json:"cortex,omitempty"`
-}
-
-// NovaRequestSpec captures the Nova scheduling request for this VM.
-type NovaRequestSpec struct {
 	// Resources describes the compute resources requested by the VM.
 	// Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
 	// +kubebuilder:validation:Required
@@ -188,17 +200,9 @@ type Flavor struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// FlavorID is the Nova flavor UUID.
+	// FlavorID is the Nova flavor id.
 	// +kubebuilder:validation:Optional
 	FlavorID string `json:"flavorID,omitempty"`
-
-	// RootGB is the root disk size in gigabytes.
-	// +kubebuilder:validation:Optional
-	RootGB uint64 `json:"rootGB,omitempty"`
-
-	// EphemeralGB is the ephemeral disk size in gigabytes.
-	// +kubebuilder:validation:Optional
-	EphemeralGB uint64 `json:"ephemeralGB,omitempty"`
 
 	// ExtraSpecs holds flavor extra specs, e.g. hypervisor type, custom traits, hardware requirements.
 	// +kubebuilder:validation:Optional
@@ -234,10 +238,10 @@ type InstanceGroup struct {
 	Policy string `json:"policy"`
 }
 
-// CortexSpec holds fields owned by the Cortex scheduler on the VM CRD.
+// CortexSpec captures the desired state of this VM in Cortex.
 type CortexSpec struct {
 	// CandidateTargetHosts is the list of hypervisor names Cortex selected as placement candidates
-	// for the current operation. Cleared once the VM is confirmed on a host.
+	// for the current operation.
 	// +kubebuilder:validation:Optional
 	CandidateTargetHosts []HostRef `json:"candidateTargetHosts,omitempty"`
 }
@@ -263,10 +267,9 @@ type VMStatus struct {
 	// +kubebuilder:validation:Optional
 	Nova *NovaStatus `json:"nova,omitempty"`
 
-	// LibvirtExporter holds state reported by the libvirt exporter for this VM.
-	// Fields are TBD — to be defined with the libvirt exporter team.
+	// Libvirt holds state reported by libvirt for this VM.
 	// +kubebuilder:validation:Optional
-	LibvirtExporter *LibvirtExporterStatus `json:"libvirtExporter,omitempty"`
+	Libvirt *LibvirtStatus `json:"libvirt,omitempty"`
 
 	// Conditions holds standard Kubernetes conditions for this VM.
 	// +listType=map
@@ -277,18 +280,18 @@ type VMStatus struct {
 
 // NovaStatus holds the last known Nova instance state for a VM.
 type NovaStatus struct {
-	// RunningState is the Nova instance status (e.g. ACTIVE, SHUTOFF, MIGRATING, ERROR, BUILD).
+	// Status is the Nova instance status (e.g. ACTIVE, SHUTOFF, MIGRATING, ERROR, BUILD).
 	// +kubebuilder:validation:Optional
-	RunningState string `json:"runningState,omitempty"`
+	Status string `json:"status,omitempty"`
 
 	// LastSyncTime is the timestamp of the last successful sync from Nova.
 	// +kubebuilder:validation:Optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
 }
 
-// LibvirtExporterStatus holds state reported by the libvirt exporter for a VM.
+// LibvirtStatus holds state reported by libvirt for a VM.
 // ObservedHosts is populated when the VM is visible on multiple hosts, e.g. during live migration.
-type LibvirtExporterStatus struct {
+type LibvirtStatus struct {
 	// ObservedHosts maps hypervisor hostnames to their observed VM state.
 	// +kubebuilder:validation:Optional
 	ObservedHosts map[string]LibvirtHostInfo `json:"observedHosts,omitempty"`
@@ -301,17 +304,23 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,shortName=vm
+// +kubebuilder:selectablefield:JSONPath=".spec.region"
+// +kubebuilder:selectablefield:JSONPath=".spec.az"
+// +kubebuilder:selectablefield:JSONPath=".spec.targetHost.name"
+// +kubebuilder:selectablefield:JSONPath=".spec.targetHost.cluster"
+// +kubebuilder:selectablefield:JSONPath=".status.host.name"
+// +kubebuilder:selectablefield:JSONPath=".status.host.cluster"
 // +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
-// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.flavor.name",name="Flavor",type="string"
-// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.resources.cpu",name="CPU",type="string"
-// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.resources.memory",name="Memory",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="Flavor",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.nova.resources.cpu",name="CPU",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.nova.resources.memory",name="Memory",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.host.name",name="Host",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].status",name="Running",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].reason",name="State",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].status",name="NovaInSync",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.nova.runningState",name="NovaState",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.nova.status",name="NovaState",type="string"
 // +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date"
-// +kubebuilder:printcolumn:JSONPath=".spec.novaRequestSpec.ownership.project",name="Project",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".spec.nova.ownership.project",name="Project",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Migrating\")].status",name="Migrating",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Resizing\")].status",name="Resizing",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Scheduled\")].reason",name="Scheduled",type="string",priority=1
@@ -320,7 +329,8 @@ type LibvirtHostInfo struct{}
 
 // VirtualMachine tracks a Nova VM from initial placement through its full lifetime.
 type VirtualMachine struct {
-	metav1.TypeMeta   `json:",inline"`
+	metav1.TypeMeta `json:",inline"`
+	// metadata.name holds the Nova instance UUID (e.g. "63ed64e2-27a2-4b70-9b5c-833c2a285d66").
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec   VMSpec   `json:"spec,omitempty"`

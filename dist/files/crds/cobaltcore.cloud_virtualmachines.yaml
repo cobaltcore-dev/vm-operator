@@ -11,10 +11,67 @@ spec:
     kind: VirtualMachine
     listKind: VirtualMachineList
     plural: virtualmachines
+    shortNames:
+    - vm
     singular: virtualmachine
   scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.az
+      name: AZ
+      type: string
+    - jsonPath: .spec.nova.flavor.name
+      name: Flavor
+      type: string
+    - jsonPath: .spec.nova.resources.cpu
+      name: CPU
+      type: string
+    - jsonPath: .spec.nova.resources.memory
+      name: Memory
+      type: string
+    - jsonPath: .status.host.name
+      name: Host
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Running")].status
+      name: Running
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Running")].reason
+      name: State
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="NovaInSync")].status
+      name: NovaInSync
+      type: string
+    - jsonPath: .status.nova.status
+      name: NovaState
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .spec.nova.ownership.project
+      name: Project
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Migrating")].status
+      name: Migrating
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Resizing")].status
+      name: Resizing
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Scheduled")].reason
+      name: Scheduled
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="NovaInSync")].reason
+      name: NovaInSyncReason
+      priority: 1
+      type: string
+    - jsonPath: .status.nova.lastSyncTime
+      name: NovaLastSync
+      priority: 1
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: VirtualMachine tracks a Nova VM from initial placement through
@@ -38,10 +95,292 @@ spec:
           metadata:
             type: object
           spec:
+            description: |-
+              VMSpec defines the desired state of a VirtualMachine.
+              Written by the Cortex placement API at scheduling time and updated on lifecycle events.
+            properties:
+              az:
+                description: AZ is the Nova availability zone the VM was scheduled
+                  into.
+                type: string
+                x-kubernetes-validations:
+                - message: az is immutable
+                  rule: self == oldSelf
+              cortex:
+                description: Cortex captures the desired state of this VM in Cortex.
+                properties:
+                  candidateTargetHosts:
+                    description: |-
+                      CandidateTargetHosts is the list of hypervisor names Cortex selected as placement candidates
+                      for the current operation.
+                    items:
+                      description: HostRef is a reference to a hypervisor host
+                      properties:
+                        cluster:
+                          description: Cluster is the compute cluster this host belongs
+                            to.
+                          type: string
+                        name:
+                          description: Name is the compute host name.
+                          type: string
+                      required:
+                      - cluster
+                      - name
+                      type: object
+                    type: array
+                type: object
+              nova:
+                description: Nova captures the last known desired state of this VM
+                  inside the OpenStack Nova service.
+                properties:
+                  createdAt:
+                    description: CreatedAt is the Nova instance creation timestamp.
+                    format: date-time
+                    type: string
+                  flavor:
+                    description: Flavor is the Nova flavor used for this VM.
+                    properties:
+                      extraSpecs:
+                        additionalProperties:
+                          type: string
+                        description: ExtraSpecs holds flavor extra specs, e.g. hypervisor
+                          type, custom traits, hardware requirements.
+                        type: object
+                      flavorID:
+                        description: FlavorID is the Nova flavor id.
+                        type: string
+                      name:
+                        description: Name is the Nova flavor name.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  groups:
+                    description: Groups lists Nova server group references this VM
+                      belongs to.
+                    items:
+                      description: GroupRef is a reference to a Nova server group
+                        kind.
+                      properties:
+                        kind:
+                          description: Kind identifies the group type, e.g. "InstanceGroup".
+                          type: string
+                      required:
+                      - kind
+                      type: object
+                    type: array
+                  image:
+                    description: Image is the Glance image used to boot the VM.
+                    properties:
+                      properties:
+                        additionalProperties:
+                          type: string
+                        description: Properties holds arbitrary image properties from
+                          Glance (e.g. os_type, hw_machine_type).
+                        type: object
+                      uuid:
+                        description: UUID is the Glance image UUID.
+                        type: string
+                    required:
+                    - uuid
+                    type: object
+                  instanceGroup:
+                    description: |-
+                      InstanceGroup holds anti/affinity group membership for this VM.
+                      Used by affinity/anti-affinity filters to enforce constraints across concurrent placements.
+                    properties:
+                      policy:
+                        description: Policy is the scheduling policy, e.g. "anti-affinity",
+                          "soft-anti-affinity".
+                        type: string
+                      uuid:
+                        description: UUID is the Nova instance group UUID.
+                        type: string
+                    required:
+                    - policy
+                    - uuid
+                    type: object
+                  instanceName:
+                    description: InstanceName is the human-readable Nova instance
+                      name, used for logging and debugging only.
+                    type: string
+                  ownership:
+                    description: Ownership identifies the OpenStack project and user
+                      owning this VM.
+                    properties:
+                      project:
+                        description: Project is the OpenStack project (tenant) UUID.
+                        type: string
+                      user:
+                        description: User is the OpenStack user UUID that created
+                          the VM.
+                        type: string
+                    required:
+                    - project
+                    type: object
+                  resources:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Resources describes the compute resources requested by the VM.
+                      Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
+                    type: object
+                    x-kubernetes-validations:
+                    - message: both cpu and memory must be specified
+                      rule: '"cpu" in self && "memory" in self'
+                    - message: all resources must be greater than 0
+                      rule: self.all(k, quantity(self[k]).isGreaterThan(quantity("0")))
+                required:
+                - flavor
+                - image
+                - ownership
+                - resources
+                type: object
+              region:
+                description: Region is the cloud region this VM is placed in.
+                type: string
+                x-kubernetes-validations:
+                - message: region is immutable
+                  rule: self == oldSelf
+              targetHost:
+                description: TargetHost is the compute host ref of the hypervisor
+                  where this VM should be placed.
+                properties:
+                  cluster:
+                    description: Cluster is the compute cluster this host belongs
+                      to.
+                    type: string
+                  name:
+                    description: Name is the compute host name.
+                    type: string
+                required:
+                - cluster
+                - name
+                type: object
+            required:
+            - az
+            - nova
+            - region
             type: object
           status:
+            description: VMStatus defines the observed state of a VirtualMachine.
+            properties:
+              conditions:
+                description: Conditions holds standard Kubernetes conditions for this
+                  VM.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              host:
+                description: Host is the compute host this VM is currently running
+                  on.
+                properties:
+                  cluster:
+                    description: Cluster is the compute cluster this host belongs
+                      to.
+                    type: string
+                  name:
+                    description: Name is the compute host name.
+                    type: string
+                required:
+                - cluster
+                - name
+                type: object
+              libvirt:
+                description: Libvirt holds state reported by libvirt for this VM.
+                properties:
+                  observedHosts:
+                    additionalProperties:
+                      description: |-
+                        LibvirtHostInfo holds the libvirt-reported state of a VM on a specific host.
+                        Fields are TBD — to be defined with the libvirt exporter team.
+                      type: object
+                    description: ObservedHosts maps hypervisor hostnames to their
+                      observed VM state.
+                    type: object
+                type: object
+              nova:
+                description: Nova holds the last known state of this VM as reported
+                  by Nova.
+                properties:
+                  lastSyncTime:
+                    description: LastSyncTime is the timestamp of the last successful
+                      sync from Nova.
+                    format: date-time
+                    type: string
+                  status:
+                    description: Status is the Nova instance status (e.g. ACTIVE,
+                      SHUTOFF, MIGRATING, ERROR, BUILD).
+                    type: string
+                type: object
             type: object
         type: object
+    selectableFields:
+    - jsonPath: .spec.region
+    - jsonPath: .spec.az
+    - jsonPath: .spec.targetHost.name
+    - jsonPath: .spec.targetHost.cluster
+    - jsonPath: .status.host.name
+    - jsonPath: .status.host.cluster
     served: true
     storage: true
     subresources:
