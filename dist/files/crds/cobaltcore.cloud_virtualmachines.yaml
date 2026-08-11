@@ -112,9 +112,9 @@ spec:
                   candidateTargetHosts:
                     description: |-
                       CandidateTargetHosts is the list of hypervisor names Cortex selected as placement candidates
-                      for the current operation.
+                      for the most recent scheduling operation of the VM.
                     items:
-                      description: HostRef is a reference to a hypervisor host
+                      description: HostRef is a reference to a hypervisor host.
                       properties:
                         cluster:
                           description: Cluster is the compute cluster this host belongs
@@ -130,8 +130,8 @@ spec:
                     type: array
                 type: object
               nova:
-                description: Nova captures the last known desired state of this VM
-                  inside the OpenStack Nova service.
+                description: NovaSpec is the last known spec of this VM inside the
+                  OpenStack Nova service.
                 properties:
                   createdAt:
                     description: CreatedAt is the Nova instance creation timestamp.
@@ -155,20 +155,6 @@ spec:
                     required:
                     - name
                     type: object
-                  groups:
-                    description: Groups lists Nova server group references this VM
-                      belongs to.
-                    items:
-                      description: GroupRef is a reference to a Nova server group
-                        kind.
-                      properties:
-                        kind:
-                          description: Kind identifies the group type, e.g. "InstanceGroup".
-                          type: string
-                      required:
-                      - kind
-                      type: object
-                    type: array
                   image:
                     description: Image is the Glance image used to boot the VM.
                     properties:
@@ -350,9 +336,8 @@ spec:
                 properties:
                   observedHosts:
                     additionalProperties:
-                      description: |-
-                        LibvirtHostInfo holds the libvirt-reported state of a VM on a specific host.
-                        Fields are TBD — to be defined with the libvirt exporter team.
+                      description: LibvirtHostInfo holds the libvirt-reported state
+                        of a VM on a specific host.
                       type: object
                     description: ObservedHosts maps hypervisor hostnames to their
                       observed VM state.

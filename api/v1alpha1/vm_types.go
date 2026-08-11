@@ -26,17 +26,18 @@ const (
 	// LabelAZ is the availability zone. Immutable.
 	LabelAZ = "cobaltcore.cloud/az"
 
-	// LabelTargetHost is the host where to place the VM on (spec).
+	// LabelTargetHost is the host where the VM should be placed on (spec).
 	LabelTargetHost = "cobaltcore.cloud/target-host"
 	// LabelHost is the host the VM is currently observed on (status).
 	LabelHost = "cobaltcore.cloud/host"
 
-	// LabelTargetCluster is the cluster where to place the VM in (spec).
+	// LabelTargetCluster is the cluster where the VM should be placed in (spec).
 	LabelTargetCluster = "cobaltcore.cloud/target-cluster"
 	// LabelCluster is the cluster the VM is currently observed in (status).
 	LabelCluster = "cobaltcore.cloud/cluster"
 )
 
+// VMConditionType identifies a condition on a VirtualMachine.
 type VMConditionType = string
 
 const (
@@ -112,6 +113,7 @@ const (
 	ConditionReasonScheduledEvacuation       = "Evacuation"
 	ConditionReasonScheduledResize           = "Resize"
 
+	// Failure reasons — set on status=False.
 	ConditionReasonScheduledNoHostFound = "NoHostFound"
 	ConditionReasonScheduledTimeout     = "Timeout"
 	ConditionReasonScheduledError       = "Error"
@@ -134,7 +136,7 @@ type VMSpec struct {
 	// +kubebuilder:validation:Optional
 	TargetHost *HostRef `json:"targetHost,omitempty"`
 
-	// Nova captures the last known desired state of this VM inside the OpenStack Nova service.
+	// NovaSpec is the last known spec of this VM inside the OpenStack Nova service.
 	// +kubebuilder:validation:Required
 	Nova NovaSpec `json:"nova"`
 
@@ -172,10 +174,6 @@ type NovaSpec struct {
 	// +kubebuilder:validation:Required
 	Image Image `json:"image"`
 
-	// Groups lists Nova server group references this VM belongs to.
-	// +kubebuilder:validation:Optional
-	Groups []GroupRef `json:"groups,omitempty"`
-
 	// InstanceGroup holds anti/affinity group membership for this VM.
 	// Used by affinity/anti-affinity filters to enforce constraints across concurrent placements.
 	// +kubebuilder:validation:Optional
@@ -194,7 +192,6 @@ type Ownership struct {
 }
 
 // Flavor describes the Nova flavor of a VM.
-// Fields mirror the Nova flavor object sent to Cortex at scheduling time.
 type Flavor struct {
 	// Name is the Nova flavor name.
 	// +kubebuilder:validation:Required
@@ -220,13 +217,6 @@ type Image struct {
 	Properties map[string]string `json:"properties,omitempty"`
 }
 
-// GroupRef is a reference to a Nova server group kind.
-type GroupRef struct {
-	// Kind identifies the group type, e.g. "InstanceGroup".
-	// +kubebuilder:validation:Required
-	Kind string `json:"kind"`
-}
-
 // InstanceGroup holds Nova instance group membership for a VM.
 type InstanceGroup struct {
 	// UUID is the Nova instance group UUID.
@@ -241,12 +231,12 @@ type InstanceGroup struct {
 // CortexSpec captures the desired state of this VM in Cortex.
 type CortexSpec struct {
 	// CandidateTargetHosts is the list of hypervisor names Cortex selected as placement candidates
-	// for the current operation.
+	// for the most recent scheduling operation of the VM.
 	// +kubebuilder:validation:Optional
 	CandidateTargetHosts []HostRef `json:"candidateTargetHosts,omitempty"`
 }
 
-// HostRef is a reference to a hypervisor host
+// HostRef is a reference to a hypervisor host.
 type HostRef struct {
 	// Name is the compute host name.
 	// +kubebuilder:validation:Required
@@ -298,7 +288,6 @@ type LibvirtStatus struct {
 }
 
 // LibvirtHostInfo holds the libvirt-reported state of a VM on a specific host.
-// Fields are TBD — to be defined with the libvirt exporter team.
 type LibvirtHostInfo struct{}
 
 // +kubebuilder:object:root=true
