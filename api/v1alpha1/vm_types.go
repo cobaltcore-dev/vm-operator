@@ -70,6 +70,12 @@ const (
 	// status=False: mismatch detected — see reason and message.
 	// status=Unknown: not yet checked.
 	ConditionTypeNovaInSync VMConditionType = "NovaInSync"
+
+	// ConditionTypeTerminating is set by the VM operator when deletion is detected on either side.
+	// Absent when the VM is not being deleted.
+	// status=False: deletion observed on one side only — possible false positive or waiting for the other side to catch up.
+	// status=True: both libvirt and Nova agree the VM is gone; CRD is held by finalizers pending cleanup.
+	ConditionTypeTerminating VMConditionType = "Terminating"
 )
 
 // Reasons for ConditionTypeRunning.
@@ -103,6 +109,16 @@ const (
 	ConditionReasonNovaInSyncHostMismatch  = "HostMismatch"
 	ConditionReasonNovaInSyncStateMismatch = "StateMismatch"
 	ConditionReasonNovaInSyncUnreachable   = "NovaUnreachable"
+)
+
+// Reasons for ConditionTypeTerminating.
+const (
+	// ConditionReasonTerminatingLibvirtGone is set when libvirt no longer observes the VM but Nova still reports it as running.
+	ConditionReasonTerminatingLibvirtGone = "LibvirtGone"
+	// ConditionReasonTerminatingNovaGone is set when Nova reports the VM as deleted but libvirt still observes it.
+	ConditionReasonTerminatingNovaGone = "NovaGone"
+	// ConditionReasonTerminatingConfirmed is set when both libvirt and Nova agree the VM is gone.
+	ConditionReasonTerminatingConfirmed = "Confirmed"
 )
 
 // Reasons for ConditionTypeScheduled.
