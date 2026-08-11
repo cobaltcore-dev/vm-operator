@@ -47,7 +47,7 @@ const (
 	// status=False: scheduling failed, see reason and message.
 	ConditionTypeScheduled VMConditionType = "Scheduled"
 
-	// ConditionTypeRunning is set by the VM operator when the VM domain is executing on a hypervisor.
+	// ConditionTypeRunning is set by the VM operator when the VM domain is executing on a host.
 	// status=True: domain running, including during live migration or resize.
 	// status=False: domain paused, shut off, crashed, or not found.
 	// status=Unknown: exporter cannot reach the host.
@@ -132,7 +132,7 @@ type VMSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="az is immutable"
 	AZ string `json:"az"`
 
-	// TargetHost is the compute host ref of the hypervisor where this VM should be placed.
+	// TargetHost is a reference to the host where this VM should be placed.
 	// +kubebuilder:validation:Optional
 	TargetHost *HostRef `json:"targetHost,omitempty"`
 
@@ -230,14 +230,14 @@ type InstanceGroup struct {
 
 // CortexSpec captures the desired state of this VM in Cortex.
 type CortexSpec struct {
-	// HostCandidates is the set of hosts Cortex has considered for the most recent scheduling operation of the VM.
+	// HostCandidates is the set of host references Cortex has considered for the most recent scheduling operation of the VM.
 	// +kubebuilder:validation:Optional
 	HostCandidates []HostRef `json:"hostCandidates,omitempty"`
 }
 
 // HostRef is a reference to a hypervisor host.
 type HostRef struct {
-	// Name is the compute host name.
+	// Name is the host name.
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
@@ -248,7 +248,7 @@ type HostRef struct {
 
 // VMStatus defines the observed state of a VirtualMachine.
 type VMStatus struct {
-	// Host is the compute host this VM is currently running on.
+	// Host is a reference to the host this VM is currently running on.
 	// +kubebuilder:validation:Optional
 	Host *HostRef `json:"host,omitempty"`
 
@@ -281,7 +281,7 @@ type NovaStatus struct {
 // LibvirtStatus holds state reported by libvirt for a VM.
 // ObservedHosts is populated when the VM is visible on multiple hosts, e.g. during live migration.
 type LibvirtStatus struct {
-	// ObservedHosts maps hypervisor hostnames to their observed VM state.
+	// ObservedHosts maps hostnames to their observed VM state.
 	// +kubebuilder:validation:Optional
 	ObservedHosts map[string]LibvirtHostInfo `json:"observedHosts,omitempty"`
 }

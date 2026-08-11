@@ -110,8 +110,9 @@ spec:
                 description: Cortex captures the desired state of this VM in Cortex.
                 properties:
                   hostCandidates:
-                    description: HostCandidates is the set of hosts Cortex has considered
-                      for the most recent scheduling operation of the VM.
+                    description: HostCandidates is the set of host references Cortex
+                      has considered for the most recent scheduling operation of the
+                      VM.
                     items:
                       description: HostRef is a reference to a hypervisor host.
                       properties:
@@ -120,7 +121,7 @@ spec:
                             to.
                           type: string
                         name:
-                          description: Name is the compute host name.
+                          description: Name is the host name.
                           type: string
                       required:
                       - cluster
@@ -232,15 +233,15 @@ spec:
                 - message: region is immutable
                   rule: self == oldSelf
               targetHost:
-                description: TargetHost is the compute host ref of the hypervisor
-                  where this VM should be placed.
+                description: TargetHost is a reference to the host where this VM should
+                  be placed.
                 properties:
                   cluster:
                     description: Cluster is the compute cluster this host belongs
                       to.
                     type: string
                   name:
-                    description: Name is the compute host name.
+                    description: Name is the host name.
                     type: string
                 required:
                 - cluster
@@ -316,15 +317,15 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               host:
-                description: Host is the compute host this VM is currently running
-                  on.
+                description: Host is a reference to the host this VM is currently
+                  running on.
                 properties:
                   cluster:
                     description: Cluster is the compute cluster this host belongs
                       to.
                     type: string
                   name:
-                    description: Name is the compute host name.
+                    description: Name is the host name.
                     type: string
                 required:
                 - cluster
@@ -338,8 +339,8 @@ spec:
                       description: LibvirtHostInfo holds the libvirt-reported state
                         of a VM on a specific host.
                       type: object
-                    description: ObservedHosts maps hypervisor hostnames to their
-                      observed VM state.
+                    description: ObservedHosts maps hostnames to their observed VM
+                      state.
                     type: object
                 type: object
               nova:
