@@ -20,6 +20,9 @@ spec:
     - jsonPath: .spec.az
       name: AZ
       type: string
+    - jsonPath: .spec.hypervisorType
+      name: HvType
+      type: string
     - jsonPath: .spec.nova.flavor.name
       name: Flavor
       type: string

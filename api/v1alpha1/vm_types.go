@@ -316,6 +316,7 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:selectablefield:JSONPath=".spec.targetHost.name"
 // +kubebuilder:selectablefield:JSONPath=".status.host.name"
 // +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.hypervisorType",name="HvType",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="Flavor",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.resources.cpu",name="CPU",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.resources.memory",name="Memory",type="string"
