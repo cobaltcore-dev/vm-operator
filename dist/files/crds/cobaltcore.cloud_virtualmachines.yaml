@@ -159,6 +159,10 @@ spec:
                       x-kubernetes-map-type: atomic
                     type: array
                 type: object
+              hypervisorType:
+                description: HypervisorType is the hypervisor type of the host where
+                  this VM should be placed.
+                type: string
               nova:
                 description: NovaSpec is the last known spec of this VM inside the
                   OpenStack Nova service.
@@ -234,27 +238,10 @@ spec:
                     required:
                     - project
                     type: object
-                  resources:
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                      x-kubernetes-int-or-string: true
-                    description: |-
-                      Resources describes the compute resources requested by the VM.
-                      Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
-                    type: object
-                    x-kubernetes-validations:
-                    - message: both cpu and memory must be specified
-                      rule: '"cpu" in self && "memory" in self'
-                    - message: all resources must be greater than 0
-                      rule: self.all(k, quantity(self[k]).isGreaterThan(quantity("0")))
                 required:
                 - flavor
                 - image
                 - ownership
-                - resources
                 type: object
               region:
                 description: Region is the cloud region this VM is placed in.
@@ -262,6 +249,22 @@ spec:
                 x-kubernetes-validations:
                 - message: region is immutable
                   rule: self == oldSelf
+              resources:
+                additionalProperties:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                  x-kubernetes-int-or-string: true
+                description: |-
+                  Resources describes the compute resources requested by the VM.
+                  Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
+                type: object
+                x-kubernetes-validations:
+                - message: both cpu and memory must be specified
+                  rule: '"cpu" in self && "memory" in self'
+                - message: all resources must be greater than 0
+                  rule: self.all(k, quantity(self[k]).isGreaterThan(quantity("0")))
               targetHost:
                 description: TargetHost is a reference to the host where this VM should
                   be placed.
@@ -310,6 +313,7 @@ spec:
             - az
             - nova
             - region
+            - resources
             type: object
           status:
             description: VMStatus defines the observed state of a VirtualMachine.

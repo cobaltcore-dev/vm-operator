@@ -137,13 +137,6 @@ func (in *NovaSpec) DeepCopyInto(out *NovaSpec) {
 		in, out := &in.CreatedAt, &out.CreatedAt
 		*out = (*in).DeepCopy()
 	}
-	if in.Resources != nil {
-		in, out := &in.Resources, &out.Resources
-		*out = make(map[ResourceName]resource.Quantity, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val.DeepCopy()
-		}
-	}
 	out.Ownership = in.Ownership
 	in.Flavor.DeepCopyInto(&out.Flavor)
 	in.Image.DeepCopyInto(&out.Image)
@@ -205,6 +198,18 @@ func (in *VMSpec) DeepCopyInto(out *VMSpec) {
 		in, out := &in.TargetHost, &out.TargetHost
 		*out = new(HostRef)
 		**out = **in
+	}
+	if in.HypervisorType != nil {
+		in, out := &in.HypervisorType, &out.HypervisorType
+		*out = new(HypervisorType)
+		**out = **in
+	}
+	if in.Resources != nil {
+		in, out := &in.Resources, &out.Resources
+		*out = make(map[ResourceName]resource.Quantity, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val.DeepCopy()
+		}
 	}
 	in.Nova.DeepCopyInto(&out.Nova)
 	if in.Cortex != nil {

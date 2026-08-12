@@ -134,6 +134,17 @@ const (
 // Note: the topology above a host is not captured here (e.g. region, AZ).
 type HostRef = corev1.ObjectReference
 
+// HypervisorType identifies the hypervisor type of a host.
+// Note: currently, only KVM hypervisors are supported by the VM operator.
+type HypervisorType string
+
+const (
+	// HypervisorTypeQEMU maps a virtual machine for QEMU/KVM hypervisors.
+	HypervisorTypeQEMU HypervisorType = "QEMU"
+	// HypervisorTypeCH maps a virtual machine for Cloud-Hypervisor/KVM hypervisors.
+	HypervisorTypeCH HypervisorType = "CH"
+)
+
 // VMSpec defines the desired state of a VirtualMachine.
 // Written by the Cortex placement API at scheduling time and updated on lifecycle events.
 type VMSpec struct {
@@ -150,6 +161,17 @@ type VMSpec struct {
 	// TargetHost is a reference to the host where this VM should be placed.
 	// +kubebuilder:validation:Optional
 	TargetHost *HostRef `json:"targetHost,omitempty"`
+
+	// HypervisorType is the hypervisor type of the host where this VM should be placed.
+	// +kubebuilder:validation:Optional
+	HypervisorType *HypervisorType `json:"hypervisorType,omitempty"`
+
+	// Resources describes the compute resources requested by the VM.
+	// Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="\"cpu\" in self && \"memory\" in self",message="both cpu and memory must be specified"
+	// +kubebuilder:validation:XValidation:rule="self.all(k, quantity(self[k]).isGreaterThan(quantity(\"0\")))",message="all resources must be greater than 0"
+	Resources map[ResourceName]resource.Quantity `json:"resources"`
 
 	// NovaSpec is the last known spec of this VM inside the OpenStack Nova service.
 	// +kubebuilder:validation:Required
@@ -169,13 +191,6 @@ type NovaSpec struct {
 	// CreatedAt is the Nova instance creation timestamp.
 	// +kubebuilder:validation:Optional
 	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
-
-	// Resources describes the compute resources requested by the VM.
-	// Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:XValidation:rule="\"cpu\" in self && \"memory\" in self",message="both cpu and memory must be specified"
-	// +kubebuilder:validation:XValidation:rule="self.all(k, quantity(self[k]).isGreaterThan(quantity(\"0\")))",message="all resources must be greater than 0"
-	Resources map[ResourceName]resource.Quantity `json:"resources"`
 
 	// Ownership identifies the OpenStack project and user owning this VM.
 	// +kubebuilder:validation:Required
