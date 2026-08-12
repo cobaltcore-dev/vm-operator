@@ -4,9 +4,9 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ResourceName identifies a VM resource type.
@@ -30,11 +30,6 @@ const (
 	LabelTargetHost = "cobaltcore.cloud/target-host"
 	// LabelHost is the host the VM is currently observed on (status).
 	LabelHost = "cobaltcore.cloud/host"
-
-	// LabelTargetCluster is the cluster where the VM should be placed in (spec).
-	LabelTargetCluster = "cobaltcore.cloud/target-cluster"
-	// LabelCluster is the cluster the VM is currently observed in (status).
-	LabelCluster = "cobaltcore.cloud/cluster"
 )
 
 // VMConditionType identifies a condition on a VirtualMachine.
@@ -134,6 +129,10 @@ const (
 	ConditionReasonScheduledTimeout     = "Timeout"
 	ConditionReasonScheduledError       = "Error"
 )
+
+// HostRef is a reference to a v1.Hypervisor.
+// Note: the topology above a host is not captured here (e.g. region, AZ).
+type HostRef = corev1.ObjectReference
 
 // VMSpec defines the desired state of a VirtualMachine.
 // Written by the Cortex placement API at scheduling time and updated on lifecycle events.
@@ -248,18 +247,7 @@ type InstanceGroup struct {
 type CortexSpec struct {
 	// HostCandidates is the set of host references Cortex has considered for the most recent scheduling operation of the VM.
 	// +kubebuilder:validation:Optional
-	HostCandidates []HostRef `json:"hostCandidates,omitempty"`
-}
-
-// HostRef is a reference to a hypervisor host.
-type HostRef struct {
-	// Name is the host name.
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// Cluster is the compute cluster this host belongs to.
-	// +kubebuilder:validation:Required
-	Cluster string `json:"cluster"`
+	HostCandidates []corev1.ObjectReference `json:"hostCandidates,omitempty"`
 }
 
 // VMStatus defines the observed state of a VirtualMachine.
@@ -311,9 +299,7 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:selectablefield:JSONPath=".spec.region"
 // +kubebuilder:selectablefield:JSONPath=".spec.az"
 // +kubebuilder:selectablefield:JSONPath=".spec.targetHost.name"
-// +kubebuilder:selectablefield:JSONPath=".spec.targetHost.cluster"
 // +kubebuilder:selectablefield:JSONPath=".status.host.name"
-// +kubebuilder:selectablefield:JSONPath=".status.host.cluster"
 // +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="Flavor",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.resources.cpu",name="CPU",type="string"
@@ -351,8 +337,5 @@ type VirtualMachineList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(func(scheme *runtime.Scheme) error {
-		scheme.AddKnownTypes(GroupVersion, &VirtualMachine{}, &VirtualMachineList{})
-		return nil
-	})
+	SchemeBuilder.Register(&VirtualMachine{}, &VirtualMachineList{})
 }
