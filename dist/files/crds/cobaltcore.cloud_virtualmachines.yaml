@@ -26,10 +26,10 @@ spec:
     - jsonPath: .spec.nova.flavor.name
       name: Flavor
       type: string
-    - jsonPath: .spec.nova.resources.cpu
+    - jsonPath: .spec.resources.cpu
       name: CPU
       type: string
-    - jsonPath: .spec.nova.resources.memory
+    - jsonPath: .spec.resources.memory
       name: Memory
       type: string
     - jsonPath: .status.host.name
