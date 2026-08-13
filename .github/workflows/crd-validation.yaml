@@ -1,0 +1,48 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+name: CRD validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "dist/files/crds/**"
+      - "test/crd/**"
+      - "Makefile"
+      - ".github/workflows/crd-validation.yaml"
+  pull_request:
+    paths:
+      - "api/**"
+      - "dist/files/crds/**"
+      - "test/crd/**"
+      - "Makefile"
+      - ".github/workflows/crd-validation.yaml"
+
+jobs:
+  crd-test:
+    name: Validate CRD against fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # kind is downloaded into ./bin and manages its own cluster via `make crd-test`.
+      # kubectl is preinstalled on ubuntu-latest runners.
+      - name: Run CRD validation tests
+        run: make crd-test
+
+  crd-drift:
+    name: CRD is up to date with API types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Regenerate CRD
+        run: make ctrlgen
+      - name: Fail if committed CRD is stale
+        run: git diff --exit-code dist/files/crds

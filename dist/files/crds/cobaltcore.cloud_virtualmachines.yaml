@@ -112,6 +112,61 @@ spec:
               cortex:
                 description: Cortex captures the desired state of this VM in Cortex.
                 properties:
+                  consumers:
+                    description: |-
+                      Consumers contains OpenStack Placement API consumers related to this VM.
+                      This includes the instance consumer and, if applicable, a migration consumer.
+                      If the VM has been created freshly, this list may be empty until the first
+                      scheduling operation has completed.
+                    items:
+                      description: PlacementConsumer describes an OpenStack Placement
+                        API consumer related to a VM.
+                      properties:
+                        generation:
+                          description: |-
+                            Generation is a monotonically increasing integer that increments each
+                            time the consumer's allocation changes.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        resourceProviderUUID:
+                          description: |-
+                            ResourceProviderUUID is the UUID of the resource provider (hypervisor)
+                            this consumer is allocated on. This UUID will match the hypervisor
+                            UUID Nova provides on api calls to /allocations.
+                          pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                          type: string
+                        resources:
+                          additionalProperties:
+                            format: int64
+                            type: integer
+                          description: |-
+                            Resources is a map of resource types to the amount of that resource
+                            allocated to this consumer.
+                          type: object
+                        type:
+                          description: |-
+                            Type is the consumer type Nova provides on api calls to /allocations.
+                            Consumers on virtual machines will only be of type "instance" or "migration".
+                            In case a migration is triggered, the instance consumer will be replaced
+                            by a migration consumer on the origin host, and a new instance consumer will
+                            be created on the destination host.
+                          enum:
+                          - instance
+                          - migration
+                          type: string
+                        uuid:
+                          description: UUID is the consumer UUID Nova provides on
+                            api calls to /allocations.
+                          pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                          type: string
+                      required:
+                      - generation
+                      - resourceProviderUUID
+                      - type
+                      - uuid
+                      type: object
+                    type: array
                   hostCandidates:
                     description: HostCandidates is the set of host references Cortex
                       has considered for the most recent scheduling operation of the
@@ -266,8 +321,6 @@ spec:
                 x-kubernetes-validations:
                 - message: both cpu and memory must be specified
                   rule: '"cpu" in self && "memory" in self'
-                - message: all resources must be greater than 0
-                  rule: self.all(k, quantity(self[k]).isGreaterThan(quantity("0")))
               targetHost:
                 description: TargetHost is a reference to the host where this VM should
                   be placed.
