@@ -170,7 +170,6 @@ type VMSpec struct {
 	// Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="\"cpu\" in self && \"memory\" in self",message="both cpu and memory must be specified"
-	// +kubebuilder:validation:XValidation:rule="self.all(k, quantity(self[k]).isGreaterThan(quantity(\"0\")))",message="all resources must be greater than 0"
 	Resources map[ResourceName]resource.Quantity `json:"resources"`
 
 	// NovaSpec is the last known spec of this VM inside the OpenStack Nova service.
@@ -258,11 +257,71 @@ type InstanceGroup struct {
 	Policy string `json:"policy"`
 }
 
+// PlacementConsumerType identifies the type of a PlacementConsumer.
+type PlacementConsumerType string
+
+const (
+	// PlacementConsumerTypeInstance is carried by a PlacementConsumer when
+	// a Nova instance has been allocated on the resource provider (hypervisor).
+	PlacementConsumerTypeInstance PlacementConsumerType = "instance"
+	// PlacementConsumerTypeMigration is carried by a PlacementConsumer when
+	// a Nova migration has been allocated on the resource provider (hypervisor).
+	PlacementConsumerTypeMigration PlacementConsumerType = "migration"
+	// Other kinds of consumers, like ports, are not tracked here (yet).
+)
+
+// PlacementResourceClass identifies a resource class in the OpenStack Placement
+// API. Resource classes can be maintained over the /resource_classes endpoint
+// of the Placement API, and typically encode the quantity like in
+// "VCPU", "MEMORY_MB", or "DISK_GB".
+type PlacementResourceClass string
+
+// PlacementConsumer describes an OpenStack Placement API consumer related to a VM.
+type PlacementConsumer struct {
+	// UUID is the consumer UUID Nova provides on api calls to /allocations.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	UUID string `json:"uuid"`
+
+	// Generation is a monotonically increasing integer that increments each
+	// time the consumer's allocation changes.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=0
+	Generation int64 `json:"generation"`
+
+	// Type is the consumer type Nova provides on api calls to /allocations.
+	// Consumers on virtual machines will only be of type "instance" or "migration".
+	// In case a migration is triggered, the instance consumer will be replaced
+	// by a migration consumer on the origin host, and a new instance consumer will
+	// be created on the destination host.
+	// +kubebuilder:validation:Enum:=instance;migration
+	Type PlacementConsumerType `json:"type"`
+
+	// ResourceProviderUUID is the UUID of the resource provider (hypervisor)
+	// this consumer is allocated on. This UUID will match the hypervisor
+	// UUID Nova provides on api calls to /allocations.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	ResourceProviderUUID string `json:"resourceProviderUUID"`
+
+	// Resources is a map of resource types to the amount of that resource
+	// allocated to this consumer.
+	// +kubebuilder:validation:Optional
+	Resources map[PlacementResourceClass]int64 `json:"resources"`
+}
+
 // CortexSpec captures the desired state of this VM in Cortex.
 type CortexSpec struct {
 	// HostCandidates is the set of host references Cortex has considered for the most recent scheduling operation of the VM.
 	// +kubebuilder:validation:Optional
 	HostCandidates []corev1.ObjectReference `json:"hostCandidates,omitempty"`
+
+	// Consumers contains OpenStack Placement API consumers related to this VM.
+	// This includes the instance consumer and, if applicable, a migration consumer.
+	// If the VM has been created freshly, this list may be empty until the first
+	// scheduling operation has completed.
+	// +kubebuilder:validation:Optional
+	Consumers []PlacementConsumer `json:"consumers,omitempty"`
 }
 
 // VMStatus defines the observed state of a VirtualMachine.
