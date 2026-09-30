@@ -2,7 +2,7 @@ apiVersion: v2
 name: vm-operator
 description: A Helm chart to distribute vm-operator.
 type: application
-version: 0.0.1
+version: 0.1.0
 appVersion: "latest"
 icon: "https://example.com/icon.png"
 dependencies:

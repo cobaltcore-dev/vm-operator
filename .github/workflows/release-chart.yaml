@@ -1,0 +1,94 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release Helm chart
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# contents: write  -> create the GitHub Release and upload the .tgz asset
+# packages: write  -> push the chart as an OCI artifact to ghcr.io
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  CHART_DIR: dist
+
+jobs:
+  release-chart:
+    name: Package, publish and release Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      # The tag (minus the leading "v") is the single source of truth for the
+      # release version. It MUST match the version committed in Chart.yaml,
+      # otherwise we would publish an artifact whose version disagrees with the
+      # tag that triggered it. Fail loudly before anything is published.
+      - name: Verify tag matches Chart.yaml version
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CHART_VERSION="$(yq '.version' "${CHART_DIR}/Chart.yaml")"
+          echo "Tag version:   ${TAG_VERSION}"
+          echo "Chart version: ${CHART_VERSION}"
+          if [ "${TAG_VERSION}" != "${CHART_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} (=${TAG_VERSION}) does not match ${CHART_DIR}/Chart.yaml version ${CHART_VERSION}"
+            exit 1
+          fi
+          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
+
+      # ghcr.io paths must be lowercase; the owner may contain uppercase.
+      - name: Compute OCI repository
+        run: |
+          set -euo pipefail
+          OWNER_LC="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          REPO_LC="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          echo "OWNER_LC=${OWNER_LC}" >> "$GITHUB_ENV"
+          # Charts are published under <repo>/charts, e.g.
+          # ghcr.io/cobaltcore-dev/vm-operator/charts/vm-operator:<version>
+          echo "OCI_REPO=oci://${REGISTRY}/${REPO_LC}/charts" >> "$GITHUB_ENV"
+
+      - name: Log in to ghcr.io
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "${REGISTRY}" \
+            -u "${{ github.actor }}" --password-stdin
+
+      # Chart.yaml declares an owner-info dependency from an OCI registry; it
+      # must be resolved into dist/charts before packaging.
+      - name: Build chart dependencies
+        run: helm dependency build "${CHART_DIR}"
+
+      - name: Package chart
+        run: |
+          set -euo pipefail
+          helm package "${CHART_DIR}" --destination .
+          echo "CHART_PACKAGE=vm-operator-${CHART_VERSION}.tgz" >> "$GITHUB_ENV"
+
+      # helm push to an OCI registry overwrites an existing tag and has no
+      # --no-overwrite flag, so we probe first: if `helm show chart` for this
+      # version succeeds, the chart already exists and we refuse to clobber it.
+      - name: Fail if chart version already exists on registry
+        run: |
+          set -euo pipefail
+          if helm show chart "${OCI_REPO}/vm-operator" --version "${CHART_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Chart vm-operator:${CHART_VERSION} already exists on ${REGISTRY} — refusing to overwrite"
+            exit 1
+          fi
+          echo "vm-operator:${CHART_VERSION} not found on ${REGISTRY} — safe to push"
+
+      - name: Push chart to ghcr.io
+        run: helm push "${CHART_PACKAGE}" "${OCI_REPO}"
+
+      - name: Create GitHub release and attach chart package
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.CHART_PACKAGE }}
