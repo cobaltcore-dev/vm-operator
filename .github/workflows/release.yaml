@@ -1,0 +1,166 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release image and Helm chart
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# contents: write  -> create the GitHub Release and upload the .tgz asset
+# packages: write  -> push the image and chart to ghcr.io
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  CHART_DIR: dist
+
+jobs:
+  # A single gate that fails the whole release if the git tag, the chart
+  # version, and the chart appVersion (= the image tag we build) disagree.
+  # Everything downstream reads VERSION from here, so image and chart can never
+  # be published out of sync with the tag or with each other.
+  verify-versions:
+    name: Verify tag, chart version and appVersion are in sync
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare tag, Chart.yaml version and appVersion
+        id: check
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CHART_VERSION="$(yq '.version' "${CHART_DIR}/Chart.yaml")"
+          APP_VERSION="$(yq '.appVersion' "${CHART_DIR}/Chart.yaml")"
+          echo "Tag version:        ${TAG_VERSION}"
+          echo "Chart version:      ${CHART_VERSION}"
+          echo "Chart appVersion:   ${APP_VERSION}"
+
+          rc=0
+          if [ "${TAG_VERSION}" != "${CHART_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} (=${TAG_VERSION}) does not match ${CHART_DIR}/Chart.yaml version ${CHART_VERSION}"
+            rc=1
+          fi
+          if [ "${TAG_VERSION}" != "${APP_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} (=${TAG_VERSION}) does not match ${CHART_DIR}/Chart.yaml appVersion ${APP_VERSION}"
+            rc=1
+          fi
+          # appVersion is the image tag the chart deploys; it must equal the
+          # version we are about to build and push.
+          if [ "${CHART_VERSION}" != "${APP_VERSION}" ]; then
+            echo "::error::Chart version ${CHART_VERSION} and appVersion ${APP_VERSION} disagree — the chart would deploy an image other than the one being released"
+            rc=1
+          fi
+          [ "$rc" -eq 0 ] || exit 1
+
+          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "All versions in sync at ${TAG_VERSION}"
+
+  release-image:
+    name: Build and push container image
+    runs-on: ubuntu-latest
+    needs: verify-versions
+    env:
+      VERSION: ${{ needs.verify-versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # ghcr.io paths must be lowercase; the owner may contain uppercase.
+      - name: Compute image reference
+        run: |
+          set -euo pipefail
+          REPO_LC="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          # e.g. ghcr.io/cobaltcore-dev/vm-operator
+          echo "IMAGE=${REGISTRY}/${REPO_LC}" >> "$GITHUB_ENV"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # helm push has no --no-overwrite and neither does the registry, so we
+      # refuse to clobber an image that already exists for this version.
+      - name: Fail if image tag already exists on registry
+        run: |
+          set -euo pipefail
+          if docker manifest inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Image ${IMAGE}:${VERSION} already exists on ${REGISTRY} — refusing to overwrite"
+            exit 1
+          fi
+          echo "${IMAGE}:${VERSION} not found on ${REGISTRY} — safe to push"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
+
+  release-chart:
+    name: Package, publish and release Helm chart
+    runs-on: ubuntu-latest
+    # Only publish the chart once the image it references actually exists.
+    needs: [verify-versions, release-image]
+    env:
+      CHART_VERSION: ${{ needs.verify-versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Compute OCI repository
+        run: |
+          set -euo pipefail
+          REPO_LC="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          # Charts are published under <repo>/charts, e.g.
+          # ghcr.io/cobaltcore-dev/vm-operator/charts/vm-operator:<version>
+          echo "OCI_REPO=oci://${REGISTRY}/${REPO_LC}/charts" >> "$GITHUB_ENV"
+
+      - name: Log in to ghcr.io
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "${REGISTRY}" \
+            -u "${{ github.actor }}" --password-stdin
+
+      # Chart.yaml declares an owner-info dependency from an OCI registry; it
+      # must be resolved into dist/charts before packaging.
+      - name: Build chart dependencies
+        run: helm dependency build "${CHART_DIR}"
+
+      - name: Package chart
+        run: |
+          set -euo pipefail
+          helm package "${CHART_DIR}" --destination .
+          echo "CHART_PACKAGE=vm-operator-${CHART_VERSION}.tgz" >> "$GITHUB_ENV"
+
+      # helm push to an OCI registry overwrites an existing tag and has no
+      # --no-overwrite flag, so we probe first: if `helm show chart` for this
+      # version succeeds, the chart already exists and we refuse to clobber it.
+      - name: Fail if chart version already exists on registry
+        run: |
+          set -euo pipefail
+          if helm show chart "${OCI_REPO}/vm-operator" --version "${CHART_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Chart vm-operator:${CHART_VERSION} already exists on ${REGISTRY} — refusing to overwrite"
+            exit 1
+          fi
+          echo "vm-operator:${CHART_VERSION} not found on ${REGISTRY} — safe to push"
+
+      - name: Push chart to ghcr.io
+        run: helm push "${CHART_PACKAGE}" "${OCI_REPO}"
+
+      - name: Create GitHub release and attach chart package
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.CHART_PACKAGE }}
