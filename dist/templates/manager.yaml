@@ -57,9 +57,6 @@ spec:
           args:
             - --leader-elect=true
             - --metrics-bind-address={{ .Values.manager.metrics.bindAddress }}
-            # Metrics are served over plain HTTP. Secure serving needs a
-            # cert-manager stack we don't ship yet, so it is hardcoded off.
-            - --metrics-secure=false
             - --health-probe-bind-address={{ .Values.manager.healthProbeBindAddress }}
             {{- if .Values.multicluster.enabled }}
             - --multicluster-config=/etc/vm-operator/multicluster.json
@@ -71,13 +68,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ .Values.manager.healthProbeBindAddress | trimPrefix ":" }}
+              port: {{ .Values.manager.healthProbePort | default 8081 }}
             initialDelaySeconds: 15
             periodSeconds: 20
           readinessProbe:
             httpGet:
               path: /readyz
-              port: {{ .Values.manager.healthProbeBindAddress | trimPrefix ":" }}
+              port: {{ .Values.manager.healthProbePort | default 8081 }}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:

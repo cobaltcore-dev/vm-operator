@@ -30,15 +30,15 @@ manager:
     tag: ""
     pullPolicy: IfNotPresent
   # Metrics endpoint. Served over plain HTTP.
-  # NOTE: secure (HTTPS) metrics are intentionally not exposed as a value yet.
-  # Enabling them requires a cert-manager stack for serving certs, which we
-  # only plan to introduce alongside admission webhooks.
   metrics:
     bindAddress: ":2112"
     # Named port used by the metrics Service and ServiceMonitor.
     port: 2112
   # Health/readiness probe endpoint.
   healthProbeBindAddress: ":8081"
+  # Named port used by health probes. Kept separate from healthProbeBindAddress
+  # so probes don't break if a host prefix is added to the bind address.
+  healthProbePort: 8081
   resources:
     requests:
       cpu: 10m

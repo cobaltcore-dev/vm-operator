@@ -4,7 +4,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"os"
 
@@ -38,15 +37,12 @@ func init() {
 
 func main() {
 	var metricsAddr string
-	var metricsSecure bool
 	var probeAddr string
 	var enableLeaderElection bool
 	var multiclusterConfigPath string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":2112",
 		"The address the metrics endpoint binds to.")
-	flag.BoolVar(&metricsSecure, "metrics-secure", false,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081",
 		"The address the health probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -67,9 +63,7 @@ func main() {
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
-			BindAddress:   metricsAddr,
-			SecureServing: metricsSecure,
-			TLSOpts:       []func(*tls.Config){},
+			BindAddress: metricsAddr,
 		},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
