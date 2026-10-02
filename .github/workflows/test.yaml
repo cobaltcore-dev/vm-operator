@@ -9,7 +9,10 @@ on:
   pull_request:
 
 jobs:
-  test:
+permissions:
+  contents: read
+
+jobs:
     name: Run unit tests
     runs-on: ubuntu-latest
     steps:
