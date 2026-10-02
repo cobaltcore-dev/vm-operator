@@ -1,0 +1,18 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v2
+name: prometheus-operator
+description: >
+  Local-development Prometheus operator setup for the vm-operator. Pulls in the
+  Prometheus operator and its CRDs (PrometheusRule, ServiceMonitor, ...) via
+  kube-prometheus-stack, and adds a Prometheus + Alertmanager instance so the
+  vm-operator's ServiceMonitor and alerts are scraped and evaluated locally.
+type: application
+version: 0.1.0
+dependencies:
+  # CRDs of the prometheus operator (PrometheusRule, ServiceMonitor, etc.) plus
+  # the operator itself. Everything else the chart ships is disabled in values.
+  - name: kube-prometheus-stack
+    repository: oci://ghcr.io/prometheus-community/charts
+    version: 91.5.2

@@ -1,0 +1,39 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-operator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: vm-operator
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    app.kubernetes.io/name: vm-operator
+    app.kubernetes.io/component: manager
+  ports:
+    - name: metrics
+      port: {{ .Values.manager.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vm-operator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: vm-operator
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vm-operator
+      app.kubernetes.io/component: metrics
+  endpoints:
+    # Plain HTTP scrape, matching the manager's --metrics-secure=false.
+    - port: metrics
+      scheme: http
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+{{- end }}

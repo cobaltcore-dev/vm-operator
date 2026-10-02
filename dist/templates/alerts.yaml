@@ -1,0 +1,43 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+# NOTE: This file is rendered by Helm. If you add Prometheus templating
+# directives (e.g. $labels.foo inside double braces) to any alert, escape the
+# outer braces so Helm does not try to evaluate them, e.g. write the opening
+# and closing pair as {{ "{{" }} ... {{ "}}" }}.
+
+{{- if .Values.alerts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vm-operator-alerts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    type: alerting-rules
+    app.kubernetes.io/name: vm-operator
+    app.kubernetes.io/component: alerts
+    {{- with .Values.alerts.prometheus }}
+    prometheus: {{ . | quote }}
+    {{- end }}
+spec:
+  groups:
+    - name: vm-operator-alerts
+      rules:
+        - alert: VMOperatorDown
+          expr: |
+            up{job=~"vm-operator.*"} != 1 or
+            absent(up{job=~"vm-operator.*"})
+          for: 5m
+          labels:
+            context: liveness
+            service: vm-operator
+            severity: warning
+            support_group: compute
+          annotations:
+            summary: "VM Operator is down"
+            description: >
+              The vm-operator manager is not reporting metrics (or its metrics
+              endpoint is unreachable). Reconciliation of VirtualMachine
+              resources is likely stalled. Investigate the manager Deployment
+              and its leader election.
+{{- end }}
