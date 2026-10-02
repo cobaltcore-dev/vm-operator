@@ -8,10 +8,12 @@ on:
     branches: [main]
   pull_request:
 
-jobs:
 permissions:
   contents: read
 
+jobs:
+  test:
+    name: Run unit tests
 jobs:
     name: Run unit tests
     runs-on: ubuntu-latest
