@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/cobaltcore-dev/cortex v0.0.0-20260930133808-1123dc4cd27e
 	github.com/go-logr/logr v1.4.4
+	github.com/gophercloud/gophercloud/v2 v2.15.0
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1

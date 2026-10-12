@@ -61,6 +61,9 @@ spec:
             {{- if .Values.multicluster.enabled }}
             - --multicluster-config=/etc/vm-operator/multicluster.json
             {{- end }}
+            {{- if .Values.openstack.enabled }}
+            - --openstack-config=/etc/vm-operator/openstack/openstack.json
+            {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.manager.metrics.port }}
@@ -85,17 +88,31 @@ spec:
             capabilities:
               drop:
                 - ALL
-          {{- if .Values.multicluster.enabled }}
+          {{- if or .Values.multicluster.enabled .Values.openstack.enabled }}
           volumeMounts:
+            {{- if .Values.multicluster.enabled }}
             - name: multicluster-config
               mountPath: /etc/vm-operator
               readOnly: true
+            {{- end }}
+            {{- if .Values.openstack.enabled }}
+            - name: openstack-config
+              mountPath: /etc/vm-operator/openstack
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if .Values.multicluster.enabled }}
+      {{- if or .Values.multicluster.enabled .Values.openstack.enabled }}
       volumes:
+        {{- if .Values.multicluster.enabled }}
         - name: multicluster-config
           secret:
             secretName: vm-operator-multicluster
+        {{- end }}
+        {{- if .Values.openstack.enabled }}
+        - name: openstack-config
+          secret:
+            secretName: vm-operator-openstack
+        {{- end }}
       {{- end }}
       terminationGracePeriodSeconds: 10
 {{- end }}

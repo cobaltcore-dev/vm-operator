@@ -66,6 +66,13 @@ const (
 	// status=Unknown: not yet checked.
 	ConditionTypeNovaInSync VMConditionType = "NovaInSync"
 
+	// ConditionTypeNovaSynced is set by the Nova sync controller to record the
+	// outcome of reflecting Nova's view of the server onto this resource.
+	// status=True: the resource reflects the latest successful Nova fetch.
+	// status=False: the most recent sync failed — see reason and message.
+	// status=Unknown: not yet synced.
+	ConditionTypeNovaSynced VMConditionType = "NovaSynced"
+
 	// ConditionTypeTerminating is set by the VM operator when deletion is detected on either side.
 	// Absent when the VM is not being deleted.
 	// status=False: deletion observed on one side only — possible false positive or waiting for the other side to catch up.
@@ -104,6 +111,20 @@ const (
 	ConditionReasonNovaInSyncHostMismatch  = "HostMismatch"
 	ConditionReasonNovaInSyncStateMismatch = "StateMismatch"
 	ConditionReasonNovaInSyncUnreachable   = "NovaUnreachable"
+)
+
+// Reasons for ConditionTypeNovaSynced.
+const (
+	// ConditionReasonNovaSyncedUpToDate is set when the resource was
+	// successfully reconciled against Nova's current view of the server,
+	// including when Nova reports the server as gone.
+	ConditionReasonNovaSyncedUpToDate = "UpToDate"
+	// ConditionReasonNovaSyncedGone is set when Nova no longer knows the server
+	// and the Nova-derived fields have been cleared from the resource.
+	ConditionReasonNovaSyncedGone = "ServerGone"
+	// ConditionReasonNovaSyncedError is set when the sync failed, e.g. Nova was
+	// unreachable.
+	ConditionReasonNovaSyncedError = "SyncError"
 )
 
 // Reasons for ConditionTypeTerminating.

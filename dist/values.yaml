@@ -96,3 +96,35 @@ multicluster:
       #     labels:
       #       availabilityZone: qa-de-1a
       remotes: []
+
+# [OpenStack]: credentials and endpoint for the Nova sync controller. The whole
+# `config` block below is rendered into a Kubernetes Secret and mounted into the
+# manager pod at /etc/vm-operator/openstack/openstack.json, where the manager
+# loads it at startup. Field names match nova.OpenStackClientConfig's JSON tags.
+#
+# Leave enabled=false (the default) to deploy the manager without a Nova client;
+# the sync controller will not function until this is configured. For local dev
+# the Tiltfile fills these from your shell's OS_* environment variables.
+openstack:
+  enabled: false
+  # Whether the chart renders the credentials Secret from the `config` block
+  # below. Set to false when the Secret is created out-of-band (e.g. by Tilt in
+  # local dev, so the password never passes through a `helm --set` argument);
+  # the manager still gets the volume/mount/flag as long as `enabled` is true.
+  createSecret: true
+  config:
+    # Keystone identity endpoint (OS_AUTH_URL), e.g. https://keystone.example.com/v3
+    url: ""
+    # Service-catalog endpoint to use: public, internal, or admin.
+    availability: public
+    # Technical user credentials (OS_USERNAME / OS_PASSWORD).
+    username: ""
+    password: ""
+    # Project and domain scope (OS_PROJECT_NAME / OS_USER_DOMAIN_NAME /
+    # OS_PROJECT_DOMAIN_NAME).
+    projectName: ""
+    userDomainName: ""
+    projectDomainName: ""
+    # Optional: region (OS_REGION_NAME) and Nova microversion.
+    region: ""
+    microversion: ""

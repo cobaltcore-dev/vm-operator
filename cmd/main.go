@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -41,6 +42,8 @@ func main() {
 	var probeAddr string
 	var enableLeaderElection bool
 	var multiclusterConfigPath string
+	var openstackConfigPath string
+	var novaSyncInterval time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":2112",
 		"The address the metrics endpoint binds to.")
@@ -51,6 +54,10 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&multiclusterConfigPath, "multicluster-config", "/etc/vm-operator/multicluster.json",
 		"Path to the multicluster client configuration file (mounted from a Secret).")
+	flag.StringVar(&openstackConfigPath, "openstack-config", "/etc/vm-operator/openstack/openstack.json",
+		"Path to the OpenStack client configuration file (mounted from a Secret).")
+	flag.DurationVar(&novaSyncInterval, "nova-sync-interval", nova.DefaultInterval,
+		"How often the Nova sync controller polls Nova for changed servers.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -114,11 +121,34 @@ func main() {
 	}
 	metrics.Registry.MustRegister(multiclusterMonitor)
 
+	// Load the OpenStack client configuration (mounted from a Secret) and build
+	// the Nova client the sync controller uses.
+	openstackConfig, err := config.Load[nova.OpenStackClientConfig](openstackConfigPath)
+	if err != nil {
+		setupLog.Error(err, "unable to load openstack config", "path", openstackConfigPath)
+		os.Exit(1)
+	}
+	openstackClient, err := nova.NewOpenStackClient(ctx, openstackConfig)
+	if err != nil {
+		setupLog.Error(err, "unable to create openstack client")
+		os.Exit(1)
+	}
+
 	if err := (&nova.Controller{
+		Client:    multiclusterClient,
+		Scheme:    mgr.GetScheme(),
+		OpenStack: openstackClient,
+		Interval:  novaSyncInterval,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "nova")
+		os.Exit(1)
+	}
+
+	if err := (&nova.CleanupController{
 		Client: multiclusterClient,
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "nova")
+		setupLog.Error(err, "unable to create controller", "controller", "nova-cleanup")
 		os.Exit(1)
 	}
 

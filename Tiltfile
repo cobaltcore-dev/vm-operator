@@ -25,6 +25,17 @@ allow_k8s_contexts(k8s_context())
 
 load('ext://helm_resource', 'helm_resource', 'helm_repo')
 
+# `helm dependency build` (below) writes the fetched dependency chart and helm's
+# transient scratch dirs into dev/helm/prometheus-operator/. Those live under a
+# watched path, so without ignoring them Tilt sees the writes, reloads the
+# Tiltfile, rebuilds the dependency, and loops forever. These are all build
+# artifacts (charts/*.tgz is gitignored; tmpcharts-* are helm scratch dirs).
+watch_settings(ignore=[
+    'dev/helm/prometheus-operator/charts',
+    'dev/helm/prometheus-operator/tmpcharts-*',
+    'dev/helm/prometheus-operator/Chart.lock',
+])
+
 # Build the operator image from the repo root using the existing Dockerfile.
 docker_build(
     IMAGE,
@@ -89,13 +100,57 @@ k8s_yaml(local(' '.join([
 # IMAGE (Tilt substitutes the built tag by ref) and satisfy the owner-info
 # subchart's required value. Monitoring and alerts are on: the CRDs now exist
 # thanks to the prometheus-operator chart above.
+#
+# OpenStack credentials for the Nova sync controller are taken from your shell's
+# standard OS_* environment variables (source your openrc before `tilt up`), so
+# no secrets are committed. If OS_AUTH_URL is unset, the openstack block stays
+# disabled and the manager runs without a Nova client.
+#
+# The credentials are NOT passed through `helm --set` (which Tilt echoes to its
+# log, leaking OS_PASSWORD). Instead we render the openstack.json ourselves and
+# create the Secret via kubectl, feeding the JSON on stdin and suppressing both
+# the command echo and its output. The chart is told enabled=true (so it mounts
+# the Secret and sets the flag) but createSecret=false (so it does not template
+# the Secret from values — we own it here).
+os_auth_url = os.getenv('OS_AUTH_URL', '')
+openstack_set = ['openstack.enabled=false']
+if os_auth_url:
+    openstack_set = ['openstack.enabled=true', 'openstack.createSecret=false']
+
+    openstack_json = encode_json({
+        'url': os_auth_url,
+        'availability': os.getenv('OS_INTERFACE', 'public'),
+        'username': os.getenv('OS_USERNAME', ''),
+        'password': os.getenv('OS_PASSWORD', ''),
+        'projectName': os.getenv('OS_PROJECT_NAME', ''),
+        'userDomainName': os.getenv('OS_USER_DOMAIN_NAME', ''),
+        'projectDomainName': os.getenv('OS_PROJECT_DOMAIN_NAME', ''),
+        'region': os.getenv('OS_REGION_NAME', ''),
+    })
+
+    # Pipe the JSON on stdin (never in argv) and apply as a Secret. echo_off
+    # hides the command, quiet hides its output, so the password reaches neither
+    # the Tilt log nor the process table.
+    k8s_yaml(local(
+        'kubectl create secret generic vm-operator-openstack ' +
+        '--from-file=openstack.json=/dev/stdin ' +
+        '--dry-run=client -o yaml',
+        stdin=openstack_json,
+        echo_off=True,
+        quiet=True,
+    ))
+else:
+    warn('OS_AUTH_URL is not set; deploying without OpenStack config. ' +
+         'Source your openrc (OS_USERNAME, OS_PASSWORD, ...) before `tilt up` ' +
+         'to enable the Nova sync controller.')
+
 chart_yaml = helm(
     'dist',
     name='vm-operator',
     set=[
         'manager.image.repository=' + IMAGE,
         'owner-info.support-group=compute',
-    ],
+    ] + openstack_set,
 )
 k8s_yaml(chart_yaml)
 
