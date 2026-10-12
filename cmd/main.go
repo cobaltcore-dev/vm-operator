@@ -22,6 +22,7 @@ import (
 
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
 	"github.com/cobaltcore-dev/vm-operator/internal"
+	"github.com/cobaltcore-dev/vm-operator/internal/config"
 	"github.com/cobaltcore-dev/vm-operator/internal/nova"
 )
 
@@ -102,7 +103,7 @@ func main() {
 			vmGVK: internal.VirtualMachineRouter{},
 		},
 	}
-	multiclusterConfig, err := internal.LoadClientConfig(multiclusterConfigPath)
+	multiclusterConfig, err := config.Load[multicluster.ClientConfig](multiclusterConfigPath)
 	if err != nil {
 		setupLog.Error(err, "unable to load multicluster config", "path", multiclusterConfigPath)
 		os.Exit(1)
