@@ -1,0 +1,108 @@
+{
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "vm-operator-overview",
+    "project": "vm-operator"
+  },
+  "spec": {
+    "display": {
+      "name": "VM Operator - Overview"
+    },
+    "panels": {
+      "managerUp": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Manager up",
+            "description": "Whether the vm-operator manager metrics endpoint is reachable."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "min": 0,
+                "max": 1
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "up{job=~\"vm-operator.*\"}",
+                    "seriesNameFormat": "{{instance}}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "reconcileTotal": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Reconciliations / s",
+            "description": "Rate of controller-runtime reconciliations by controller."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "sum by (controller) (rate(controller_runtime_reconcile_total{job=~\"vm-operator.*\"}[5m]))",
+                    "seriesNameFormat": "{{controller}}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "layouts": [
+      {
+        "kind": "Grid",
+        "spec": {
+          "display": {
+            "title": "Overview",
+            "collapse": {
+              "open": true
+            }
+          },
+          "items": [
+            {
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/managerUp"
+              }
+            },
+            {
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/reconcileTotal"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "duration": "1h",
+    "refreshInterval": "30s"
+  }
+}

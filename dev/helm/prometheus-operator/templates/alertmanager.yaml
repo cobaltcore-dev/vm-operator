@@ -1,0 +1,25 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: vm-operator-alertmanager
+  labels:
+    alertmanagerConfig: vm-operator-alertmanager
+spec:
+  route:
+    groupBy: ["job"]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 12h
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Alertmanager
+metadata:
+  name: vm-operator-alertmanager
+spec:
+  replicas: 1
+  alertmanagerConfigSelector:
+    matchLabels:
+      alertmanagerConfig: vm-operator-alertmanager

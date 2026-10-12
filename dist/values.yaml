@@ -15,3 +15,84 @@ crd:
   # NOTE: Removing the CRDs will also remove all cert-manager CR(s)
   # (Certificates, Issuers, ...) due to garbage collection.
   keep: true
+
+# [Manager]: The controller-manager Deployment and its ServiceAccount.
+manager:
+  # Whether to render the manager Deployment and ServiceAccount.
+  enabled: true
+  # Number of replicas. Kept at 3 to pair with leader election so a
+  # single active manager is elected while the others stand by.
+  replicas: 3
+  image:
+    repository: ghcr.io/cobaltcore-dev/vm-operator
+    # Empty by default: the image tag falls back to the chart's appVersion, so
+    # the deployed image matches the released chart. Override for local dev.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Metrics endpoint. Served over plain HTTP.
+  metrics:
+    bindAddress: ":2112"
+    # Named port used by the metrics Service and ServiceMonitor.
+    port: 2112
+  # Health/readiness probe endpoint.
+  healthProbeBindAddress: ":8081"
+  # Named port used by health probes. Kept separate from healthProbeBindAddress
+  # so probes don't break if a host prefix is added to the bind address.
+  healthProbePort: 8081
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+# [RBAC]: ClusterRole and ClusterRoleBinding the manager needs to
+# reconcile VirtualMachine objects and run leader election.
+rbac:
+  enabled: true
+
+# [Monitoring]: metrics Service and a Prometheus Operator ServiceMonitor.
+# Requires the monitoring.coreos.com/v1 CRDs to be present in the cluster.
+monitoring:
+  enabled: true
+  serviceMonitor:
+    # Scrape interval for the ServiceMonitor.
+    interval: 30s
+
+# [Alerts]: a Prometheus Operator PrometheusRule with basic liveness alerts.
+# Requires the monitoring.coreos.com/v1 CRDs to be present in the cluster.
+alerts:
+  enabled: true
+  # Optional value for the "prometheus" label on the PrometheusRule, used by
+  # some Prometheus instances to select which rules to load. Leave empty to omit.
+  prometheus: ""
+
+# [Multicluster]: configuration for the cortex multicluster client. The whole
+# `config` block below (including any remote apiserver caCert) is rendered into
+# a Kubernetes Secret and mounted into the manager pod at
+# /etc/vm-operator/multicluster.json, where the manager loads it at startup.
+multicluster:
+  enabled: true
+  config:
+    apiservers:
+      # Resources managed in the cluster where the vm-operator runs.
+      home:
+        gvks:
+          - cobaltcore.cloud/v1alpha1/VirtualMachine
+      # Resources managed in remote clusters. Each remote apiserver must accept
+      # the manager ServiceAccount's tokens (see structured auth). VirtualMachine
+      # writes are routed to the remote whose labels.availabilityZone matches the
+      # VM's spec.az.
+      # remotes:
+      #   - host: https://remote-apiserver:6443
+      #     caCert: |
+      #       -----BEGIN CERTIFICATE-----
+      #       ...
+      #       -----END CERTIFICATE-----
+      #     insecureSkipTLSVerify: false
+      #     gvks:
+      #       - cobaltcore.cloud/v1alpha1/VirtualMachine
+      #     labels:
+      #       availabilityZone: qa-de-1a
+      remotes: []

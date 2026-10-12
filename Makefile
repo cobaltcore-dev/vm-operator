@@ -1,8 +1,39 @@
 # Copyright SAP SE
 # SPDX-License-Identifier: Apache-2.0
 
+# Phases run by `make all`, in order. Each is a normal target below.
+PHASES ?= ctrlgen lint test crd-test
+
 .PHONY: all
-all: ctrlgen crd-test
+all: ## Run all phases (ctrlgen, lint, test, crd-test), quietly unless one fails.
+	@rc=0; \
+	for phase in $(PHASES); do \
+	  printf '\033[1;34m▶ %-10s\033[0m ' "$$phase"; \
+	  log="$$(mktemp)"; \
+	  if $(MAKE) --no-print-directory "$$phase" >"$$log" 2>&1; then \
+	    printf '\033[1;32mok\033[0m\n'; \
+	  else \
+	    printf '\033[1;31mFAILED\033[0m\n'; \
+	    cat "$$log"; \
+	    rc=1; \
+	    rm -f "$$log"; \
+	    break; \
+	  fi; \
+	  rm -f "$$log"; \
+	done; \
+	exit $$rc
+
+.PHONY: test
+test: ## Run the Go unit tests.
+	go test ./...
+
+.PHONY: lint
+lint: golangci-lint ## Run golangci-lint.
+	$(GOLANGCI_LINT) run
+
+.PHONY: lint-fix
+lint-fix: golangci-lint ## Run golangci-lint and apply fixes.
+	$(GOLANGCI_LINT) run --fix
 
 .PHONY: ctrlgen
 ctrlgen: controller-gen
@@ -39,9 +70,11 @@ $(LOCALBIN):
 
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 KIND ?= $(LOCALBIN)/kind
+GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
 KIND_VERSION ?= v0.32.0
+GOLANGCI_LINT_VERSION ?= v2.14.0
 KIND_CLUSTER ?= vm-crd-test
 
 .PHONY: controller-gen
@@ -53,6 +86,11 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 kind: $(KIND) ## Download kind locally if necessary.
 $(KIND): $(LOCALBIN)
 	$(call go-install-tool,$(KIND),sigs.k8s.io/kind/cmd/kind,$(KIND_VERSION))
+
+.PHONY: golangci-lint
+golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
+$(GOLANGCI_LINT): $(LOCALBIN)
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
@@ -69,3 +107,4 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
+

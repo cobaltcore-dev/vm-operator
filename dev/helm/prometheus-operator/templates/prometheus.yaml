@@ -1,0 +1,23 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: vm-operator-prometheus
+spec:
+  serviceAccountName: vm-operator-prometheus
+  # Select everything: local development has a single Prometheus that should
+  # scrape all ServiceMonitors and evaluate all PrometheusRules in the cluster.
+  serviceMonitorSelectorNilUsesHelmValues: false
+  serviceMonitorSelector: {}
+  serviceMonitorNamespaceSelector: {}
+  ruleSelector: {}
+  ruleNamespaceSelector: {}
+  enableAdminAPI: true
+  alerting:
+    alertmanagers:
+      - namespace: {{ .Release.Namespace }}
+        name: alertmanager-operated
+        port: web
+  scrapeInterval: 30s

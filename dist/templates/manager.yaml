@@ -1,0 +1,101 @@
+{{- if .Values.manager.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vm-operator-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: vm-operator
+    app.kubernetes.io/component: manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-operator-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: vm-operator
+    app.kubernetes.io/component: manager
+spec:
+  # Multiple replicas rely on leader election so exactly one is active.
+  replicas: {{ .Values.manager.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vm-operator
+      app.kubernetes.io/component: manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vm-operator
+        app.kubernetes.io/component: manager
+    spec:
+      serviceAccountName: vm-operator-manager
+      # Soft anti-affinity: the replicas exist for leader-election HA, so prefer
+      # spreading them across nodes (a node failure shouldn't take out all of
+      # them at once) while still allowing them to co-locate on a single-node
+      # local/dev cluster rather than staying Pending.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vm-operator
+                    app.kubernetes.io/component: manager
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: "{{ .Values.manager.image.repository }}:{{ .Values.manager.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.manager.image.pullPolicy }}
+          command:
+            - /main
+          args:
+            - --leader-elect=true
+            - --metrics-bind-address={{ .Values.manager.metrics.bindAddress }}
+            - --health-probe-bind-address={{ .Values.manager.healthProbeBindAddress }}
+            {{- if .Values.multicluster.enabled }}
+            - --multicluster-config=/etc/vm-operator/multicluster.json
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.manager.metrics.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.manager.healthProbePort | default 8081 }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.manager.healthProbePort | default 8081 }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.manager.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          {{- if .Values.multicluster.enabled }}
+          volumeMounts:
+            - name: multicluster-config
+              mountPath: /etc/vm-operator
+              readOnly: true
+          {{- end }}
+      {{- if .Values.multicluster.enabled }}
+      volumes:
+        - name: multicluster-config
+          secret:
+            secretName: vm-operator-multicluster
+      {{- end }}
+      terminationGracePeriodSeconds: 10
+{{- end }}

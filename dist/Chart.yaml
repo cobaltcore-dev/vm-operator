@@ -3,7 +3,10 @@ name: vm-operator
 description: A Helm chart to distribute vm-operator.
 type: application
 version: 0.1.0
-appVersion: "latest"
+# appVersion is the container image tag the chart deploys. The release workflow
+# enforces that it equals the chart version and the pushed git tag, so all three
+# stay in lockstep.
+appVersion: "0.1.0"
 icon: "https://example.com/icon.png"
 dependencies:
 # Owner info adds a configmap to the kubernetes cluster with information on

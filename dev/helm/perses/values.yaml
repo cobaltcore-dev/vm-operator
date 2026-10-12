@@ -1,0 +1,35 @@
+# Copyright SAP SE
+# SPDX-License-Identifier: Apache-2.0
+
+# Values for the upstream perses/perses Helm chart, used by Tilt for local
+# development. A sidecar watches for ConfigMaps labelled perses.dev/resource=true
+# (the dashboards + project we ship under ./dashboards) and provisions them.
+sidecar:
+  enabled: true
+
+config:
+  provisioning:
+    folders:
+      - /etc/perses/provisioning
+      - /etc/perses/datasources
+    interval: 1m
+  plugin:
+    path: /etc/perses/plugins
+    archive_paths:
+      - /etc/perses/plugins-archive
+
+# Default datasource points at the operator-managed Prometheus Service that the
+# prometheus-operator chart brings up (Service name "prometheus-operated").
+datasources:
+  - kind: GlobalDatasource
+    metadata:
+      name: PrometheusVMOperator
+    spec:
+      default: true
+      plugin:
+        kind: PrometheusDatasource
+        spec:
+          proxy:
+            kind: HTTPProxy
+            spec:
+              url: http://prometheus-operated:9090
