@@ -69,6 +69,10 @@ type Controller struct {
 	// down. The channel only decides *which* resources get reconciled; the data
 	// fetching happens in Reconcile.
 	eventCh chan event.GenericEvent
+
+	// Metrics records reconcile and poll instrumentation. May be nil (e.g. in
+	// tests), in which case recording is a no-op.
+	Metrics *Metrics
 }
 
 // Reconcile brings a single VirtualMachine in line with Nova's current view of
@@ -88,9 +92,17 @@ type Controller struct {
 func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// outcome is observed (with the elapsed duration) when Reconcile returns.
+	// Each branch below assigns the outcome it reaches; the default covers the
+	// both-missing no-op case.
+	start := time.Now()
+	outcome := outcomeNoop
+	defer func() { c.Metrics.observeReconcile(outcome, start) }()
+
 	server, found, err := c.OpenStack.FetchServer(ctx, req.Name)
 	if err != nil {
 		// Record the failure on the resource if it exists, then retry.
+		outcome = outcomeError
 		c.markSyncFailed(ctx, req.NamespacedName, err)
 		return ctrl.Result{}, fmt.Errorf("fetching nova server %s: %w", req.Name, err)
 	}
@@ -100,15 +112,31 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	switch {
 	case getErr == nil:
 		// Resource exists: sync (or clear) and patch.
-		return ctrl.Result{}, c.syncExisting(ctx, log, &vm, server, found)
+		if found {
+			outcome = outcomeSynced
+		} else {
+			outcome = outcomeCleared
+		}
+		if syncErr := c.syncExisting(ctx, log, &vm, server, found); syncErr != nil {
+			outcome = outcomeError
+			return ctrl.Result{}, syncErr
+		}
+		return ctrl.Result{}, nil
 	case apierrors.IsNotFound(getErr):
 		if !found {
 			// Neither side has it; nothing to do.
+			outcome = outcomeNoop
 			return ctrl.Result{}, nil
 		}
 		// Nova has it but we don't: create it from Nova's view.
-		return ctrl.Result{}, c.createFromServer(ctx, log, req.Name, server)
+		outcome = outcomeCreated
+		if createErr := c.createFromServer(ctx, log, req.Name, server); createErr != nil {
+			outcome = outcomeError
+			return ctrl.Result{}, createErr
+		}
+		return ctrl.Result{}, nil
 	default:
+		outcome = outcomeError
 		return ctrl.Result{}, fmt.Errorf("getting VirtualMachine %s: %w", req.Name, getErr)
 	}
 }
@@ -279,19 +307,30 @@ func (c *Controller) Start(ctx context.Context) error {
 // Errors are logged rather than returned so a transient failure does not tear
 // down the loop.
 func (c *Controller) poll(ctx context.Context, log logr.Logger) {
+	start := time.Now()
+
 	novaServers, err := c.OpenStack.FetchServers(ctx)
 	if err != nil {
 		log.Error(err, "failed to list servers from nova")
+		c.Metrics.recordPollError("fetch_servers")
+		c.Metrics.observePoll("error", start)
 		return
 	}
 
 	var vmList v1alpha1.VirtualMachineList
 	if err := c.List(ctx, &vmList); err != nil {
 		log.Error(err, "failed to list VirtualMachines")
+		c.Metrics.recordPollError("list_vms")
+		c.Metrics.observePoll("error", start)
 		return
 	}
 
 	uuids := uuidsToReconcile(novaServers, vmList.Items)
+	// The fetch+list+diff — the work that can fail — has succeeded here, so
+	// record the snapshot gauges and the poll duration now rather than after
+	// the enqueue loop (which can return early on ctx cancellation).
+	c.Metrics.setPollGauges(len(novaServers), len(vmList.Items), len(uuids))
+	c.Metrics.observePoll("success", start)
 	log.V(1).Info("computed reconcile set",
 		"servers", len(novaServers), "vms", len(vmList.Items), "toReconcile", len(uuids))
 

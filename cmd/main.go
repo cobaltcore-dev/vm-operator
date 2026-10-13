@@ -121,6 +121,12 @@ func main() {
 	}
 	metrics.Registry.MustRegister(multiclusterMonitor)
 
+	// Nova metrics: created once, injected into the controllers and the metered
+	// OpenStack client, and registered once with the controller-runtime registry
+	// (mirroring the multicluster monitor above).
+	novaMetrics := nova.NewMetrics()
+	metrics.Registry.MustRegister(novaMetrics)
+
 	// Load the OpenStack client configuration (mounted from a Secret) and build
 	// the Nova client the sync controller uses.
 	openstackConfig, err := config.Load[nova.OpenStackClientConfig](openstackConfigPath)
@@ -133,20 +139,25 @@ func main() {
 		setupLog.Error(err, "unable to create openstack client")
 		os.Exit(1)
 	}
+	// Instrument the Nova API calls (count, latency, outcome) via a decorator so
+	// the gophercloud client stays metrics-free.
+	meteredOpenstackClient := nova.NewMeteredOpenStackClient(openstackClient, novaMetrics)
 
 	if err := (&nova.Controller{
 		Client:    multiclusterClient,
 		Scheme:    mgr.GetScheme(),
-		OpenStack: openstackClient,
+		OpenStack: meteredOpenstackClient,
 		Interval:  novaSyncInterval,
+		Metrics:   novaMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "nova")
 		os.Exit(1)
 	}
 
 	if err := (&nova.CleanupController{
-		Client: multiclusterClient,
-		Scheme: mgr.GetScheme(),
+		Client:  multiclusterClient,
+		Scheme:  mgr.GetScheme(),
+		Metrics: novaMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "nova-cleanup")
 		os.Exit(1)

@@ -67,6 +67,223 @@
             }
           ]
         }
+      },
+      "novaServers": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Nova fleet vs. managed VMs",
+            "description": "Nova servers seen by the last poll compared with the VirtualMachine resources managed."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "vm_operator_nova_servers{job=~\"vm-operator.*\"}",
+                    "seriesNameFormat": "nova servers"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "vm_operator_nova_managed_vms{job=~\"vm-operator.*\"}",
+                    "seriesNameFormat": "managed vms"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "reconcileBacklog": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Reconcile backlog",
+            "description": "UUIDs the most recent poll enqueued for reconciliation. Should return to zero between polls."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "min": 0
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "vm_operator_nova_reconcile_backlog{job=~\"vm-operator.*\"}",
+                    "seriesNameFormat": "{{instance}}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "reconcileOutcomes": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Nova reconcile outcomes / s",
+            "description": "Rate of nova VirtualMachine reconciles by outcome (synced, created, cleared, noop, error)."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "sum by (outcome) (rate(vm_operator_nova_reconcile_total{job=~\"vm-operator.*\"}[5m]))",
+                    "seriesNameFormat": "{{outcome}}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "novaApiRate": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Nova API requests / s",
+            "description": "Rate of Nova API requests by method and outcome."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "sum by (method, outcome) (rate(vm_operator_nova_api_requests_total{job=~\"vm-operator.*\"}[5m]))",
+                    "seriesNameFormat": "{{method}} {{outcome}}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "novaApiLatencyP99": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Nova API latency (p99)",
+            "description": "99th percentile Nova API request duration by method."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "format": {
+                  "unit": "seconds"
+                }
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "histogram_quantile(0.99, sum by (le, method) (rate(vm_operator_nova_api_request_duration_seconds_bucket{job=~\"vm-operator.*\"}[5m])))",
+                    "seriesNameFormat": "{{method}}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "pollDurationP99": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Poll loop duration (p99)",
+            "description": "99th percentile duration of a nova poll loop iteration."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "format": {
+                  "unit": "seconds"
+                }
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "histogram_quantile(0.99, sum by (le) (rate(vm_operator_nova_poll_duration_seconds_bucket{job=~\"vm-operator.*\"}[5m])))",
+                    "seriesNameFormat": "p99"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "pruneRate": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "VM prunes / s",
+            "description": "Rate of VirtualMachine prunes by the cleanup controller, by outcome."
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "PrometheusTimeSeriesQuery",
+                  "spec": {
+                    "query": "sum by (outcome) (rate(vm_operator_nova_prune_total{job=~\"vm-operator.*\"}[5m]))",
+                    "seriesNameFormat": "{{outcome}}"
+                  }
+                }
+              }
+            }
+          ]
+        }
       }
     },
     "layouts": [
@@ -96,6 +313,69 @@
               "height": 8,
               "content": {
                 "$ref": "#/spec/panels/reconcileTotal"
+              }
+            },
+            {
+              "x": 0,
+              "y": 8,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/novaServers"
+              }
+            },
+            {
+              "x": 12,
+              "y": 8,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/reconcileBacklog"
+              }
+            },
+            {
+              "x": 0,
+              "y": 16,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/reconcileOutcomes"
+              }
+            },
+            {
+              "x": 12,
+              "y": 16,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/pruneRate"
+              }
+            },
+            {
+              "x": 0,
+              "y": 24,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/novaApiRate"
+              }
+            },
+            {
+              "x": 12,
+              "y": 24,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/novaApiLatencyP99"
+              }
+            },
+            {
+              "x": 0,
+              "y": 32,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/pollDurationP99"
               }
             }
           ]

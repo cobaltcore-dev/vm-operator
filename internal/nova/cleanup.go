@@ -33,6 +33,10 @@ import (
 type CleanupController struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// Metrics records prune instrumentation. May be nil (e.g. in tests), in
+	// which case recording is a no-op.
+	Metrics *Metrics
 }
 
 // Reconcile prunes a VirtualMachine only once Nova has observed its server in
@@ -56,7 +60,12 @@ func (c *CleanupController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// deliberately left alone.
 	if vm.Status.Nova != nil && vm.Status.Nova.Status == "DELETED" {
 		log.V(1).Info("pruning VirtualMachine: nova reports server deleted", "name", vm.Name)
-		return ctrl.Result{}, client.IgnoreNotFound(c.Delete(ctx, &vm))
+		if err := client.IgnoreNotFound(c.Delete(ctx, &vm)); err != nil {
+			c.Metrics.recordPrune("error")
+			return ctrl.Result{}, err
+		}
+		c.Metrics.recordPrune("pruned")
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil
