@@ -96,8 +96,7 @@ func TestCleanupController_keepsHealthyVM(t *testing.T) {
 	const name = testVMUUID
 
 	scheme := newTestScheme(t)
-	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	applyNovaState(vm, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1"})
+	vm := seedVM(name, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1"})
 	c := &CleanupController{Client: newTestClient(t, scheme, vm), Scheme: scheme}
 
 	res, err := c.Reconcile(context.Background(), request())

@@ -12,10 +12,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
-	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -29,37 +28,23 @@ import (
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
 )
 
-// MinInterval is the lowest polling interval the controller will honour. It
-// guards against a misconfigured (zero or tiny) interval turning the periodic
-// fetch into a tight loop that hammers Nova.
+// MinInterval clamps the poll interval to avoid a tight loop that hammers Nova.
 const MinInterval = time.Second
 
-// DefaultInterval is the out-of-the-box poll interval: it is both the default
-// value of the --nova-sync-interval flag (see cmd/main.go) and the fallback the
-// poll loop applies when configured with a non-positive Interval.
+// DefaultInterval is the poll interval used when none (or a non-positive one) is
+// configured; it is also the --nova-sync-interval flag default (see cmd/main.go).
 const DefaultInterval = 5 * time.Minute
 
 // Controller keeps VirtualMachine resources in sync with the Nova servers they
-// mirror.
+// mirror. A periodic poll loop (Start) decides *which* resources are out of sync
+// and enqueues their uuids; Reconcile does the per-resource work, fetching one
+// server's state from Nova and writing it onto the resource. The poll loop makes
+// no per-server Nova calls — it diffs a single bulk listing.
 //
-// It is split along the standard controller-runtime seam: a periodic poll loop
-// (see Start) decides *which* resources are out of sync and enqueues their
-// uuids, and Reconcile does the per-resource heavy lifting — it fetches that one
-// server's authoritative state from Nova and writes it onto the resource. The
-// poll loop deliberately performs no per-server Nova calls; it uses a single
-// bulk listing to avoid enqueuing resources that are already in sync.
+// Reconcile never deletes resources; pruning is CleanupController's job. It only
+// records Nova's view, including clearing the Nova fields when the server is gone.
 //
-// Reconcile never deletes resources. Pruning is the cleanup controller's job
-// (see CleanupController): Reconcile only records Nova's view, including marking
-// a resource as gone when Nova no longer knows the server.
-//
-// Client is typically a cortex multicluster client, so reads and writes may be
-// served by the home cluster or a remote cluster routed by availability zone
-// (see VirtualMachineRouter).
-//
-// The manager needs the following RBAC permissions for this controller and
-// CleanupController; they are templated by hand in dist/templates/rbac.yaml
-// rather than generated:
+// RBAC (templated by hand in dist/templates/rbac.yaml):
 //   - cobaltcore.cloud/virtualmachines: get;list;watch;create;update;patch;delete
 //   - cobaltcore.cloud/virtualmachines/status: get;update;patch
 //   - cobaltcore.cloud/virtualmachines/finalizers: update
@@ -70,284 +55,209 @@ type Controller struct {
 	// OpenStack is the Nova API the poll loop and Reconcile talk to.
 	OpenStack OpenStackClient
 
-	// Region is the OpenStack region this operator manages (from the client
-	// config, OS_REGION_NAME). It is written to Spec.Region of VirtualMachines
-	// created from Nova state, so it must be set.
+	// Region (from OS_REGION_NAME) is written to Spec.Region of created VMs.
 	Region string
 
-	// Interval is how often the poll loop lists Nova. Values below MinInterval
-	// are clamped; a non-positive value falls back to DefaultInterval.
+	// Interval is how often the poll loop lists Nova. Clamped to [MinInterval, ∞);
+	// a non-positive value falls back to DefaultInterval.
 	Interval time.Duration
 
-	// eventCh carries the uuids the poll loop decides to reconcile. It is
-	// created in SetupWithManager and closed by Start when the manager shuts
-	// down. The channel only decides *which* resources get reconciled; the data
-	// fetching happens in Reconcile.
+	// eventCh carries the uuids the poll loop decides to reconcile; created in
+	// SetupWithManager, closed by Start on shutdown.
 	eventCh chan event.GenericEvent
 
-	// Metrics records reconcile and poll instrumentation. May be nil (e.g. in
-	// tests), in which case recording is a no-op.
+	// Metrics records reconcile and poll instrumentation. May be nil (no-op).
 	Metrics *Metrics
 }
 
-// Reconcile brings a single VirtualMachine in line with Nova's current view of
-// the server with the same uuid. It fetches that one server's authoritative
-// state and then:
+// Reconcile brings a single VirtualMachine in line with Nova's view of the
+// server with the same uuid. It fetches the server (and its flavor), converts
+// them, and dispatches on whether each side exists:
 //
-//   - server found, resource found: sync the Nova-derived fields onto the
-//     resource (this includes a DELETED server, whose status is recorded as-is).
-//   - server found, resource missing: create the resource with the fields Nova
-//     provides.
-//   - server missing, resource found: clear the Nova-derived fields (do NOT
-//     delete — the cleanup controller prunes).
-//   - server missing, resource missing: nothing to do.
+//	           │ in Nova              │ not in Nova
+//	───────────┼──────────────────────┼─────────────────────
+//	 in k8s    │ unchanged: noop      │ clear the Nova fields
+//	           │ changed: patch       │
+//	───────────┼──────────────────────┼─────────────────────
+//	 not in k8s│ create (may skip)    │ noop
 //
-// On success it records a NovaSynced=True condition; on a Nova fetch error it
-// records NovaSynced=False and returns the error so the request is retried.
+// On success it records NovaSynced=True; on a fetch error, NovaSynced=False, and
+// returns the error so the request is retried.
 func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-
-	// outcome is observed (with the elapsed duration) when Reconcile returns.
-	// Each branch below assigns the outcome it reaches; the default covers the
-	// both-missing no-op case.
 	start := time.Now()
-	outcome := outcomeNoop
-	defer func() { c.Metrics.observeReconcile(outcome, start) }()
 
-	server, found, err := c.OpenStack.FetchServer(ctx, req.Name)
+	// Fetch the server. A fetch error is retried (and recorded on the resource);
+	// a gone server (inNova == false) means Nova no longer knows it.
+	server, inNova, err := c.OpenStack.FetchServer(ctx, req.Name)
 	if err != nil {
-		// Record the failure on the resource if it exists, then retry.
-		outcome = outcomeError
-		c.markSyncFailed(ctx, req.NamespacedName, err)
-		return ctrl.Result{}, fmt.Errorf("fetching nova server %s: %w", req.Name, err)
+		err = fmt.Errorf("fetching nova server %s: %w", req.Name, err)
+		// Best-effort: record NovaSynced=False on the resource if it exists, then
+		// retry (the error is still returned to requeue).
+		var vm v1alpha1.VirtualMachine
+		if c.Get(ctx, req.NamespacedName, &vm) == nil {
+			base := vm.DeepCopy()
+			meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
+				Type:    v1alpha1.ConditionTypeNovaSynced,
+				Status:  metav1.ConditionFalse,
+				Reason:  v1alpha1.ConditionReasonNovaSyncedError,
+				Message: err.Error(),
+			})
+			if perr := c.Status().Patch(ctx, &vm, client.MergeFrom(base)); perr != nil {
+				log.Error(perr, "could not record nova sync failure on resource", "name", req.Name)
+			}
+		}
+		c.Metrics.observeReconcile(outcomeError, start)
+		return ctrl.Result{}, err
 	}
 
 	var vm v1alpha1.VirtualMachine
 	getErr := c.Get(ctx, req.NamespacedName, &vm)
-	switch {
-	case getErr == nil:
-		// Resource exists: sync (or clear) and patch.
-		if found {
-			outcome = outcomeSynced
-		} else {
-			outcome = outcomeCleared
-		}
-		if syncErr := c.syncExisting(ctx, log, &vm, server, found); syncErr != nil {
-			outcome = outcomeError
-			return ctrl.Result{}, syncErr
-		}
-		return ctrl.Result{}, nil
-	case apierrors.IsNotFound(getErr):
-		if !found {
-			// Neither side has it; nothing to do.
-			outcome = outcomeNoop
-			return ctrl.Result{}, nil
-		}
-		// Nova has it but we don't: create it from Nova's view. createFromServer
-		// may legitimately skip (returning created=false) for a server that cannot
-		// yet yield a valid resource, which is a noop rather than a create.
-		created, createErr := c.createFromServer(ctx, log, req.Name, server)
-		switch {
-		case createErr != nil:
-			outcome = outcomeError
-			return ctrl.Result{}, createErr
-		case created:
-			outcome = outcomeCreated
-		default:
-			outcome = outcomeNoop
-		}
-		return ctrl.Result{}, nil
-	default:
-		outcome = outcomeError
+	inK8s := getErr == nil
+	if getErr != nil && !apierrors.IsNotFound(getErr) {
+		c.Metrics.observeReconcile(outcomeError, start)
 		return ctrl.Result{}, fmt.Errorf("getting VirtualMachine %s: %w", req.Name, getErr)
 	}
-}
 
-// syncExisting applies Nova's view onto an existing resource, records the
-// NovaSynced condition, and persists whatever changed. When the server is gone
-// (found == false) the Nova-derived fields are cleared instead.
-func (c *Controller) syncExisting(ctx context.Context, log logr.Logger, vm *v1alpha1.VirtualMachine, server *servers.Server, found bool) error {
+	// Case: neither side has it — nothing to do.
+	if !inK8s && !inNova {
+		c.Metrics.observeReconcile(outcomeNoop, start)
+		return ctrl.Result{}, nil
+	}
+
+	// Convert a server in Nova to the VirtualMachine it maps onto. Every server
+	// must have a findable, managed flavor; if the id is absent, the flavor cannot
+	// be fetched, or its hypervisor type is unmanaged, the server is skipped (a
+	// noop, not an error — the next poll re-enqueues if its state changes). A gone
+	// server needs no conversion.
+	var conv ConvertedVirtualMachine
+	if inNova {
+		// Resolve the flavor by its id (a missing id or a failed fetch leaves it nil,
+		// which convert rejects as unmanaged). An unmanaged hypervisor type is an
+		// expected skip (noop, not an error — the next poll re-enqueues it); any other
+		// conversion error is unexpected and propagated for retry.
+		var flavor *flavors.Flavor
+		if id, _ := server.Flavor["id"].(string); id != "" {
+			if f, ferr := c.OpenStack.FetchFlavor(ctx, id); ferr == nil {
+				flavor = f
+			}
+		}
+		converted, convErr := ConvertToVirtualMachine(server, flavor, c.Region)
+		switch {
+		case errors.Is(convErr, ErrUnmanagedHypervisorType):
+			log.V(1).Info("skipping: nova server has no managed flavor", "name", req.Name)
+			c.Metrics.observeReconcile(outcomeNoop, start)
+			return ctrl.Result{}, nil
+		case convErr != nil:
+			c.Metrics.observeReconcile(outcomeError, start)
+			return ctrl.Result{}, fmt.Errorf("converting nova server %s: %w", req.Name, convErr)
+		}
+		conv = converted
+	}
+
+	// Case: Nova has the server but k8s does not — adopt it, unless it is not yet
+	// schedulable (no availability zone), which is a noop rather than a create.
+	if !inK8s {
+		if conv.Spec.AZ == "" {
+			log.V(1).Info("skipping create: nova server has no availability zone yet", "name", req.Name)
+			c.Metrics.observeReconcile(outcomeNoop, start)
+			return ctrl.Result{}, nil
+		}
+		created := conv.DeepCopy() // ObjectMeta.Name is already the server uuid.
+		if err := c.Create(ctx, created); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				c.Metrics.observeReconcile(outcomeNoop, start) // Raced; the next reconcile syncs it.
+				return ctrl.Result{}, nil
+			}
+			c.Metrics.observeReconcile(outcomeError, start)
+			return ctrl.Result{}, fmt.Errorf("creating VirtualMachine %s: %w", req.Name, err)
+		}
+		// Create persists spec + metadata only, so record status separately.
+		meta.SetStatusCondition(&created.Status.Conditions, metav1.Condition{
+			Type:    v1alpha1.ConditionTypeNovaSynced,
+			Status:  metav1.ConditionTrue,
+			Reason:  v1alpha1.ConditionReasonNovaSyncedUpToDate,
+			Message: "resource created from nova state",
+		})
+		created.Status.Nova.LastSyncTime = new(metav1.Now()) // Nova is non-nil post-conversion.
+		if err := c.Status().Update(ctx, created); err != nil {
+			c.Metrics.observeReconcile(outcomeError, start)
+			return ctrl.Result{}, fmt.Errorf("updating created VirtualMachine %s status: %w", req.Name, err)
+		}
+		// Adoption is a meaningful, low-frequency transition; log at Info (syncs stay V(1)).
+		log.Info("created VirtualMachine from nova", "name", req.Name)
+		c.Metrics.observeReconcile(outcomeCreated, start)
+		return ctrl.Result{}, nil
+	}
+
+	// Case: k8s has the resource — patch Nova's view onto it (inNova), or clear the
+	// Nova fields when the server is gone. LastSyncTime, conditions and Status.Host
+	// are preserved either way.
 	base := vm.DeepCopy()
-
-	applyNovaState(vm, server) // server may be nil, which clears the fields.
-
 	reason, message := v1alpha1.ConditionReasonNovaSyncedUpToDate, "resource reflects the current nova state"
-	if !found {
+	outcome := outcomeSynced
+	var changed bool
+	if inNova {
+		changed = conv.HasChanged(&vm)
+		conv.PatchInto(&vm)
+	} else {
+		var lastSync *metav1.Time
+		var status string
+		if vm.Status.Nova != nil {
+			lastSync = vm.Status.Nova.LastSyncTime
+			status = vm.Status.Nova.Status
+		}
+		changed = !equality.Semantic.DeepEqual(vm.Spec.Nova, v1alpha1.NovaSpec{}) || status != ""
+		vm.Spec.Nova = v1alpha1.NovaSpec{}
+		vm.Status.Nova = &v1alpha1.NovaStatus{LastSyncTime: lastSync}
 		reason, message = v1alpha1.ConditionReasonNovaSyncedGone, "nova no longer knows this server; nova fields cleared"
+		outcome = outcomeCleared
 	}
-	meta.SetStatusCondition(&vm.Status.Conditions, novaSyncedCondition(metav1.ConditionTrue, reason, message))
-
-	if novaStateEqual(base, vm) && !conditionChanged(base, vm) {
-		// Nothing meaningful changed; skip the write (and the churn of bumping
-		// LastSyncTime every interval).
-		return nil
-	}
-	stampSyncTime(vm)
-
-	if err := c.persist(ctx, base, vm); err != nil {
-		return err
-	}
-	log.V(1).Info("synced VirtualMachine with nova", "name", vm.Name, "serverFound", found)
-	return nil
-}
-
-// createFromServer creates a new resource carrying the fields Nova provides,
-// then records the sync outcome on its status. It reports created=true only when
-// a resource was actually created; a skip (see below) or a lost create race
-// returns created=false so the caller records a noop rather than a create.
-//
-// Besides the Nova-derived fields (via applyNovaState), it must populate the
-// VMSpec fields the CRD requires at creation and the placement fields derived
-// from Nova — Region, AZ, Resources, HypervisorType, and TargetHost — since no
-// other actor has written them for a server that exists in Nova but has no CRD
-// yet. These are immutable afterwards, so they are set here exactly once and
-// never touched by applyNovaState on subsequent syncs.
-//
-// Creation is skipped (not errored, which would hot-loop) when the server cannot
-// yield a valid resource:
-//   - no availability zone (e.g. not yet scheduled, or shelved),
-//   - no flavor id, or
-//   - a flavor whose hypervisor type is not one this operator manages (qemu/ch).
-//
-// The next poll re-enqueues it if its state later changes.
-func (c *Controller) createFromServer(ctx context.Context, log logr.Logger, uuid string, server *servers.Server) (bool, error) {
-	az := server.AvailabilityZone
-	if az == "" {
-		log.V(1).Info("skipping create: nova server has no availability zone yet", "name", uuid)
-		return false, nil
-	}
-
-	flavorID := stringField(server.Flavor, "id")
-	if flavorID == "" {
-		// A server with no flavor id cannot yield the Resources the CRD requires.
-		// Skip rather than error: erroring would requeue and hot-loop, and the
-		// next poll re-enqueues the server if it later reports a flavor.
-		log.V(1).Info("skipping create: nova server has no flavor id", "name", uuid)
-		return false, nil
-	}
-	flavor, err := c.OpenStack.FetchFlavor(ctx, flavorID)
-	if err != nil {
-		return false, fmt.Errorf("fetching flavor for VirtualMachine %s: %w", uuid, err)
-	}
-
-	hypervisorType, ok := hypervisorTypeFromFlavor(flavor)
-	if !ok {
-		log.V(1).Info("skipping create: nova server flavor is not a managed hypervisor type",
-			"name", uuid, "flavor", flavorID)
-		return false, nil
-	}
-
-	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: uuid}}
-	applyNovaState(vm, server)
-	vm.Spec.AZ = az
-	vm.Spec.Region = c.Region
-	vm.Spec.Resources = resourcesFromFlavor(flavor)
-	vm.Spec.HypervisorType = &hypervisorType
-	vm.Spec.TargetHost = hostRef(server.Host) // nil when the server reports no host
-
-	if err := c.Create(ctx, vm); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return false, nil // Raced with another create; the next reconcile syncs it.
-		}
-		return false, fmt.Errorf("creating VirtualMachine %s: %w", uuid, err)
-	}
-
-	// Create only persists spec + metadata, so record status separately.
-	meta.SetStatusCondition(&vm.Status.Conditions, novaSyncedCondition(
-		metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate, "resource created from nova state"))
-	stampSyncTime(vm)
-	if err := c.Status().Update(ctx, vm); err != nil {
-		return false, fmt.Errorf("updating created VirtualMachine %s status: %w", uuid, err)
-	}
-	// Creating a resource from a pre-existing Nova server (adoption) is a
-	// meaningful, low-frequency transition, so log it at Info alongside the
-	// prune in CleanupController; per-sync updates stay at V(1).
-	log.Info("created VirtualMachine from nova", "name", uuid)
-	return true, nil
-}
-
-// resourcesFromFlavor maps a Nova flavor's vCPU and RAM onto the cpu/memory
-// resources the CRD requires.
-func resourcesFromFlavor(flavor *flavors.Flavor) map[v1alpha1.ResourceName]resource.Quantity {
-	return map[v1alpha1.ResourceName]resource.Quantity{
-		v1alpha1.ResourceCPU: *resource.NewQuantity(int64(flavor.VCPUs), resource.DecimalSI),
-		// RAM is reported in MB; store memory in bytes (ResourceMemory is bytes).
-		v1alpha1.ResourceMemory: *resource.NewQuantity(int64(flavor.RAM)*1024*1024, resource.BinarySI),
-	}
-}
-
-// persist writes the difference between base and vm back to the apiserver.
-// Spec and status are separate subresources, so each is patched independently;
-// a status patch ignores spec changes and vice versa. The spec patch is applied
-// first because it advances the resourceVersion the status patch then builds on.
-func (c *Controller) persist(ctx context.Context, base, vm *v1alpha1.VirtualMachine) error {
-	desiredStatus := vm.Status
-
-	if specChanged(base, vm) {
-		if err := c.Patch(ctx, vm, client.MergeFrom(base)); err != nil {
-			return fmt.Errorf("patching VirtualMachine %s spec: %w", vm.Name, err)
-		}
-		// The spec patch replaced vm (incl. its status) with the stored object;
-		// restore the status we intend to write.
-		vm.Status = desiredStatus
-	}
-
-	statusBase := base.DeepCopy()
-	statusBase.ObjectMeta = vm.ObjectMeta // match the current resourceVersion
-	if err := c.Status().Patch(ctx, vm, client.MergeFrom(statusBase)); err != nil {
-		return fmt.Errorf("patching VirtualMachine %s status: %w", vm.Name, err)
-	}
-	return nil
-}
-
-// markSyncFailed records a NovaSynced=False condition on the resource when a
-// Nova fetch fails. Best-effort: errors here are logged, not propagated, since
-// the caller already returns the underlying fetch error for retry.
-func (c *Controller) markSyncFailed(ctx context.Context, key client.ObjectKey, cause error) {
-	log := logf.FromContext(ctx)
-
-	var vm v1alpha1.VirtualMachine
-	if err := c.Get(ctx, key, &vm); err != nil {
-		return // Resource may not exist; nothing to annotate.
-	}
-	base := vm.DeepCopy()
-	meta.SetStatusCondition(&vm.Status.Conditions, novaSyncedCondition(
-		metav1.ConditionFalse, v1alpha1.ConditionReasonNovaSyncedError, cause.Error()))
-	if err := c.Status().Patch(ctx, &vm, client.MergeFrom(base)); err != nil {
-		// Best-effort: the caller already returns the fetch error for retry, so a
-		// failure to annotate is not fatal — but it is still an error worth seeing.
-		log.Error(err, "could not record nova sync failure on resource", "name", key.Name)
-	}
-}
-
-// novaSyncedCondition builds a NovaSynced condition with the given outcome.
-func novaSyncedCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
-	return metav1.Condition{
+	meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
 		Type:    v1alpha1.ConditionTypeNovaSynced,
-		Status:  status,
+		Status:  metav1.ConditionTrue,
 		Reason:  reason,
 		Message: message,
-	}
-}
+	})
 
-// conditionChanged reports whether the NovaSynced condition differs between base
-// and vm (ignoring the condition's own timestamps, which SetStatusCondition only
-// bumps on a real change).
-func conditionChanged(base, vm *v1alpha1.VirtualMachine) bool {
-	old := meta.FindStatusCondition(base.Status.Conditions, v1alpha1.ConditionTypeNovaSynced)
-	cur := meta.FindStatusCondition(vm.Status.Conditions, v1alpha1.ConditionTypeNovaSynced)
-	if old == nil || cur == nil {
-		return old != cur
+	// Skip the write when nothing meaningful changed: neither the Nova fields nor
+	// the NovaSynced condition (ignoring the timestamp SetStatusCondition only
+	// bumps on a real change).
+	oldCond := meta.FindStatusCondition(base.Status.Conditions, v1alpha1.ConditionTypeNovaSynced)
+	newCond := meta.FindStatusCondition(vm.Status.Conditions, v1alpha1.ConditionTypeNovaSynced)
+	conditionChanged := (oldCond == nil) != (newCond == nil) ||
+		(oldCond != nil && newCond != nil &&
+			(oldCond.Status != newCond.Status || oldCond.Reason != newCond.Reason || oldCond.Message != newCond.Message))
+	if !changed && !conditionChanged {
+		c.Metrics.observeReconcile(outcome, start)
+		return ctrl.Result{}, nil
 	}
-	return old.Status != cur.Status || old.Reason != cur.Reason || old.Message != cur.Message
-}
-
-// stampSyncTime records the current time as the last successful Nova sync.
-func stampSyncTime(vm *v1alpha1.VirtualMachine) {
 	if vm.Status.Nova == nil {
 		vm.Status.Nova = &v1alpha1.NovaStatus{}
 	}
 	vm.Status.Nova.LastSyncTime = new(metav1.Now())
+
+	// Spec and status are separate subresources, patched independently; the spec
+	// patch goes first because it advances the resourceVersion the status patch
+	// then builds on.
+	desiredStatus := vm.Status
+	if !equality.Semantic.DeepEqual(base.Spec, vm.Spec) {
+		if err := c.Patch(ctx, &vm, client.MergeFrom(base)); err != nil {
+			c.Metrics.observeReconcile(outcomeError, start)
+			return ctrl.Result{}, fmt.Errorf("patching VirtualMachine %s spec: %w", req.Name, err)
+		}
+		// The spec patch replaced vm (incl. status) with the stored object; restore ours.
+		vm.Status = desiredStatus
+	}
+	statusBase := base.DeepCopy()
+	statusBase.ObjectMeta = vm.ObjectMeta // match the current resourceVersion
+	if err := c.Status().Patch(ctx, &vm, client.MergeFrom(statusBase)); err != nil {
+		c.Metrics.observeReconcile(outcomeError, start)
+		return ctrl.Result{}, fmt.Errorf("patching VirtualMachine %s status: %w", req.Name, err)
+	}
+	log.V(1).Info("synced VirtualMachine with nova", "name", req.Name, "serverFound", inNova)
+	c.Metrics.observeReconcile(outcome, start)
+	return ctrl.Result{}, nil
 }
 
 // Start runs the periodic poll loop until ctx is cancelled. It implements
@@ -385,16 +295,12 @@ func (c *Controller) Start(ctx context.Context) error {
 	}
 }
 
-// poll decides which resources need reconciling and enqueues their uuids. It
-// lists Nova once and lists the VM CRDs once, then enqueues a uuid when the two
-// disagree on any Nova-derived field (or when one side has a server/resource the
-// other lacks). It performs no per-server Nova calls — that is Reconcile's job.
-// Errors are logged rather than returned so a transient failure does not tear
-// down the loop.
-//
-// Servers whose flavor is not a hypervisor type this operator manages (qemu/ch)
-// are dropped from the snapshot before diffing, so they are never enqueued. The
-// flavor listing (public + private) is fetched once per poll for this filter.
+// poll converts every managed Nova server, diffs each against its k8s
+// counterpart, and enqueues the uuids that need reconciling: a managed server
+// with no CRD (create), a CRD whose fields differ (sync), or a CRD whose server
+// is gone but still carries Nova fields (clear). It makes no per-server Nova
+// calls — that is Reconcile's job — and logs errors rather than returning them so
+// a transient failure does not tear down the loop.
 func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 	start := time.Now()
 
@@ -405,7 +311,6 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 		c.Metrics.observePoll("error", start)
 		return
 	}
-
 	flavorsByID, err := c.OpenStack.FetchFlavors(ctx)
 	if err != nil {
 		log.Error(err, "failed to list flavors from nova")
@@ -413,8 +318,6 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 		c.Metrics.observePoll("error", start)
 		return
 	}
-	managedServers := managedServersOnly(novaServers, flavorsByID)
-
 	var vmList v1alpha1.VirtualMachineList
 	if err := c.List(ctx, &vmList); err != nil {
 		log.Error(err, "failed to list VirtualMachines")
@@ -423,20 +326,53 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 		return
 	}
 
-	uuids := uuidsToReconcile(managedServers, vmList.Items)
-	// The fetch+list+diff — the work that can fail — has succeeded here, so
-	// record the snapshot gauges and the poll duration now rather than after
-	// the enqueue loop (which can return early on ctx cancellation).
-	c.Metrics.setPollGauges(len(managedServers), len(vmList.Items), len(uuids))
+	// Convert every server, keeping the managed ones (qemu/ch) keyed by uuid. An
+	// unmanaged hypervisor type is the expected skip; any other conversion error is
+	// unexpected, so log it (the server is still skipped) rather than swallow it.
+	managed := make(map[string]ConvertedVirtualMachine, len(novaServers))
+	for i := range novaServers {
+		flavorID, _ := novaServers[i].Flavor["id"].(string) // comma-ok: may be absent.
+		conv, err := ConvertToVirtualMachine(&novaServers[i], flavorsByID[flavorID], c.Region)
+		switch {
+		case errors.Is(err, ErrUnmanagedHypervisorType):
+			continue
+		case err != nil:
+			log.Error(err, "skipping nova server: unexpected conversion error", "name", novaServers[i].ID)
+			continue
+		}
+		managed[novaServers[i].ID] = conv
+	}
+
+	// A CRD with no managed server needs reconciling regardless (freshly created in
+	// k8s, or vanished from Nova and awaiting a clear); otherwise enqueue only when
+	// its server differs. Then add managed servers that have no CRD yet.
+	hasVM := make(map[string]struct{}, len(vmList.Items))
+	var uuids []string
+	for i := range vmList.Items {
+		vm := &vmList.Items[i]
+		hasVM[vm.Name] = struct{}{}
+		if conv, inNova := managed[vm.Name]; !inNova || conv.HasChanged(vm) {
+			uuids = append(uuids, vm.Name)
+		}
+	}
+	for uuid := range managed {
+		if _, ok := hasVM[uuid]; !ok {
+			uuids = append(uuids, uuid)
+		}
+	}
+	sort.Strings(uuids)
+
+	// Record gauges + duration now: the fallible work is done, and the enqueue
+	// loop below can return early on ctx cancellation.
+	c.Metrics.setPollGauges(len(managed), len(vmList.Items), len(uuids))
 	c.Metrics.observePoll("success", start)
 	log.V(1).Info("computed reconcile set",
-		"servers", len(novaServers), "managedServers", len(managedServers),
+		"servers", len(novaServers), "managedServers", len(managed),
 		"vms", len(vmList.Items), "toReconcile", len(uuids))
 
 	for _, uuid := range uuids {
-		// The VM CRD is named after the Nova server uuid, so an event carrying a
-		// VirtualMachine with that name is translated by EnqueueRequestForObject
-		// into the right reconcile request.
+		// The CRD is named after the server uuid, so EnqueueRequestForObject turns
+		// this event into the right reconcile request.
 		evt := event.GenericEvent{Object: &v1alpha1.VirtualMachine{
 			ObjectMeta: metav1.ObjectMeta{Name: uuid},
 		}}
@@ -446,62 +382,6 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 			return
 		}
 	}
-}
-
-// managedServersOnly returns the subset of servers whose flavor is a hypervisor
-// type this operator manages (qemu/ch), using the flavor listing keyed by id. A
-// server whose flavor id is unknown or carries an unsupported hypervisor type is
-// dropped, so it is never enqueued or created.
-func managedServersOnly(novaServers []servers.Server, flavorsByID map[string]*flavors.Flavor) []servers.Server {
-	out := make([]servers.Server, 0, len(novaServers))
-	for i := range novaServers {
-		flavorID := stringField(novaServers[i].Flavor, "id")
-		if _, ok := hypervisorTypeFromFlavor(flavorsByID[flavorID]); ok {
-			out = append(out, novaServers[i])
-		}
-	}
-	return out
-}
-
-// uuidsToReconcile returns, in stable order, the uuids whose VM CRD does not
-// match the Nova server listing and therefore need a reconcile:
-//
-//   - a Nova server with no CRD (Reconcile will create it),
-//   - a CRD with no Nova server (Reconcile will clear its Nova fields), and
-//   - a CRD whose Nova-derived fields differ from the server (Reconcile will
-//     sync it).
-//
-// uuids already in sync are omitted so steady-state polls enqueue nothing.
-func uuidsToReconcile(novaServers []servers.Server, vms []v1alpha1.VirtualMachine) []string {
-	byUUID := make(map[string]*servers.Server, len(novaServers))
-	for i := range novaServers {
-		byUUID[novaServers[i].ID] = &novaServers[i]
-	}
-	hasVM := make(map[string]struct{}, len(vms))
-
-	var out []string
-	for i := range vms {
-		vm := &vms[i]
-		hasVM[vm.Name] = struct{}{}
-
-		switch server, inNova := byUUID[vm.Name]; {
-		case !inNova && novaFieldsSet(vm):
-			// Server gone but the CRD still carries its Nova fields.
-			out = append(out, vm.Name)
-		case inNova && novaStateDiffers(vm, server):
-			out = append(out, vm.Name)
-		}
-	}
-
-	// Nova servers that have no CRD yet.
-	for i := range novaServers {
-		if _, ok := hasVM[novaServers[i].ID]; !ok {
-			out = append(out, novaServers[i].ID)
-		}
-	}
-
-	sort.Strings(out)
-	return out
 }
 
 // SetupWithManager wires the periodic poll loop into the manager and registers

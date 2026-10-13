@@ -29,6 +29,19 @@ import (
 // controller and cleanup tests.
 const testVMUUID = "63ed64e2-27a2-4b70-9b5c-833c2a285d66"
 
+// seedVM builds a VirtualMachine the way the controller's sync path would, by
+// converting server with a managed flavor and patching the Nova fields in. Tests
+// use it to construct the expected in-sync state for a given server.
+func seedVM(name string, server *servers.Server) *v1alpha1.VirtualMachine {
+	conv, err := ConvertToVirtualMachine(server, qemuFlavor("f", 1, 1), "")
+	if err != nil {
+		panic(err) // qemuFlavor is always managed.
+	}
+	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	conv.PatchInto(vm)
+	return vm
+}
+
 // fakeOpenStackClient is a stub OpenStackClient. FetchServers returns the bulk
 // listing; FetchServer looks a single server up in the same slice (or honours a
 // per-uuid override), so tests can drive the poll loop and Reconcile from one
@@ -79,10 +92,11 @@ func (f *fakeOpenStackClient) FetchFlavors(context.Context) (map[string]*flavors
 }
 
 // qemuFlavor is a flavor fixture whose extra specs mark it as a managed (qemu)
-// hypervisor type, with the given id, vCPUs, and RAM (MB).
+// hypervisor type, with the given id (also used as its name), vCPUs, and RAM (MB).
 func qemuFlavor(id string, vcpus, ramMB int) *flavors.Flavor {
 	return &flavors.Flavor{
 		ID:         id,
+		Name:       id,
 		VCPUs:      vcpus,
 		RAM:        ramMB,
 		ExtraSpecs: map[string]string{hypervisorTypeExtraSpec: "qemu"},
@@ -142,14 +156,11 @@ func TestController_poll_enqueuesOutOfSyncUUIDs(t *testing.T) {
 
 	flavorRef := map[string]any{"id": "f"}
 	// inSync: CRD already reflects the server.
-	inSyncVM := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: inSync}}
-	applyNovaState(inSyncVM, &servers.Server{ID: inSync, Status: "ACTIVE", Host: "compute-1", Flavor: flavorRef})
+	inSyncVM := seedVM(inSync, &servers.Server{ID: inSync, Status: "ACTIVE", Host: "compute-1", Flavor: flavorRef})
 	// outOfSync: CRD status differs from the server.
-	outVM := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: outOfSync}}
-	applyNovaState(outVM, &servers.Server{ID: outOfSync, Status: "ACTIVE", Host: "compute-1", Flavor: flavorRef})
+	outVM := seedVM(outOfSync, &servers.Server{ID: outOfSync, Status: "ACTIVE", Host: "compute-1", Flavor: flavorRef})
 	// orphan: CRD carries Nova fields but the server is gone.
-	orphanVM := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: orphan}}
-	applyNovaState(orphanVM, &servers.Server{ID: orphan, Status: "ACTIVE", Host: "compute-9", Flavor: flavorRef})
+	orphanVM := seedVM(orphan, &servers.Server{ID: orphan, Status: "ACTIVE", Host: "compute-9", Flavor: flavorRef})
 
 	c := &Controller{
 		Client: newTestClient(t, scheme, inSyncVM, outVM, orphanVM),
@@ -235,9 +246,12 @@ func TestController_Reconcile_syncsExistingVM(t *testing.T) {
 	c := &Controller{
 		Client: newTestClient(t, scheme, vm),
 		Scheme: scheme,
-		OpenStack: &fakeOpenStackClient{result: []servers.Server{
-			{ID: name, Status: "ACTIVE", Host: "compute-1", TenantID: "proj", InstanceName: "web-1"},
-		}},
+		OpenStack: &fakeOpenStackClient{
+			result: []servers.Server{
+				{ID: name, Status: "ACTIVE", Host: "compute-1", TenantID: "proj", InstanceName: "web-1", Flavor: map[string]any{"id": "f"}},
+			},
+			flavors: map[string]*flavors.Flavor{"f": qemuFlavor("f", 2, 2048)},
+		},
 	}
 
 	if _, err := c.Reconcile(context.Background(), request()); err != nil {
@@ -260,6 +274,32 @@ func TestController_Reconcile_syncsExistingVM(t *testing.T) {
 		t.Error("expected LastSyncTime to be stamped on sync")
 	}
 	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
+}
+
+func TestController_Reconcile_syncsFlavorOntoExistingVM(t *testing.T) {
+	const name = testVMUUID
+
+	// An existing VM carrying no flavor must get it patched in on sync, from the
+	// flavor Reconcile fetches alongside the server.
+	scheme := newTestScheme(t)
+	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	c := &Controller{
+		Client: newTestClient(t, scheme, vm),
+		Scheme: scheme,
+		OpenStack: &fakeOpenStackClient{
+			result:  []servers.Server{{ID: name, Status: "ACTIVE", Flavor: map[string]any{"id": "flavor-uuid"}}},
+			flavors: map[string]*flavors.Flavor{"flavor-uuid": qemuFlavor("flavor-uuid", 4, 8192)},
+		},
+	}
+
+	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	got := getVM(t, c)
+	if got.Spec.Nova.Flavor.Name != "flavor-uuid" || got.Spec.Nova.Flavor.FlavorID != "flavor-uuid" {
+		t.Errorf("spec.nova.flavor = %+v, want name/id flavor-uuid", got.Spec.Nova.Flavor)
+	}
 }
 
 func TestController_Reconcile_createsMissingVM(t *testing.T) {
@@ -310,6 +350,13 @@ func TestController_Reconcile_createsMissingVM(t *testing.T) {
 	mem := got.Spec.Resources[v1alpha1.ResourceMemory]
 	if mem.Value() != 8192*1024*1024 {
 		t.Errorf("spec.resources[memory] = %s, want 8192Mi in bytes", mem.String())
+	}
+	// Flavor name, id, and extra specs are written from the fetched flavor.
+	if got.Spec.Nova.Flavor.Name != "flavor-uuid" || got.Spec.Nova.Flavor.FlavorID != "flavor-uuid" {
+		t.Errorf("spec.nova.flavor = %+v, want name/id flavor-uuid", got.Spec.Nova.Flavor)
+	}
+	if got.Spec.Nova.Flavor.ExtraSpecs[hypervisorTypeExtraSpec] != "qemu" {
+		t.Errorf("spec.nova.flavor.extraSpecs = %+v, want hypervisor type qemu", got.Spec.Nova.Flavor.ExtraSpecs)
 	}
 	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
 }
@@ -376,8 +423,7 @@ func TestController_Reconcile_clearsFieldsWhenServerGone(t *testing.T) {
 	const name = testVMUUID
 
 	scheme := newTestScheme(t)
-	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	applyNovaState(vm, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1", InstanceName: "web-1"})
+	vm := seedVM(name, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1", InstanceName: "web-1"})
 	// Status.Host is owned by another component; the syncer must leave it intact
 	// even when it clears its own Nova-derived fields.
 	vm.Status.Host = &v1alpha1.HostRef{Name: "compute-1"}
@@ -409,9 +455,12 @@ func TestController_Reconcile_recordsDeletedStatus(t *testing.T) {
 	scheme := newTestScheme(t)
 	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	c := &Controller{
-		Client:    newTestClient(t, scheme, vm),
-		Scheme:    scheme,
-		OpenStack: &fakeOpenStackClient{result: []servers.Server{{ID: name, Status: "DELETED"}}},
+		Client: newTestClient(t, scheme, vm),
+		Scheme: scheme,
+		OpenStack: &fakeOpenStackClient{
+			result:  []servers.Server{{ID: name, Status: "DELETED", Flavor: map[string]any{"id": "f"}}},
+			flavors: map[string]*flavors.Flavor{"f": qemuFlavor("f", 2, 2048)},
+		},
 	}
 
 	if _, err := c.Reconcile(context.Background(), request()); err != nil {
