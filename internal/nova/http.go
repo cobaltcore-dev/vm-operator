@@ -5,7 +5,6 @@ package nova
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -99,14 +98,15 @@ func NewTransport(conf HTTPClientConfig) (*http.Transport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load client certificate: %w", err)
 	}
-	caCertPool := x509.NewCertPool()
-	caCertPool.AddCert(cert.Leaf)
+	// The cert is a *client* certificate for mutual TLS, so it goes only in
+	// Certificates. We deliberately leave RootCAs nil: a non-nil RootCAs would
+	// replace the system root pool, breaking verification of the server's own
+	// certificate when SelfSigned is false.
 	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			RootCAs:      caCertPool,
-			// If the cert is self signed, skip verification.
+			// If the server cert is self signed, skip verification.
 			//nolint:gosec
 			InsecureSkipVerify: conf.SelfSigned,
 		},

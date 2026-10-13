@@ -11,6 +11,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -33,6 +34,18 @@ type OpenStackClient interface {
 	// reconciler treats as "the server is gone". Reconcile calls this to get
 	// authoritative per-server state rather than relying on the bulk snapshot.
 	FetchServer(ctx context.Context, uuid string) (server *servers.Server, found bool, err error)
+
+	// FetchFlavor returns the Nova flavor with the given id, including its extra
+	// specs. The sync controller uses it on the create path to resolve a server's
+	// vCPU, RAM, and hypervisor type. Extra specs are fetched explicitly (not read
+	// off the Get response) because flavor Get/List only embed extra_specs at
+	// microversion >=2.61.
+	FetchFlavor(ctx context.Context, id string) (*flavors.Flavor, error)
+
+	// FetchFlavors lists all flavors (public + private) with their extra specs,
+	// keyed by flavor id. The poll loop uses it to filter out servers whose flavor
+	// is not a hypervisor type this operator manages, before enqueuing.
+	FetchFlavors(ctx context.Context) (map[string]*flavors.Flavor, error)
 }
 
 // OpenStackClientConfig supplies everything NewOpenStackClient needs to reach
@@ -58,8 +71,9 @@ type OpenStackClientConfig struct {
 	// (OS_PROJECT_DOMAIN_NAME).
 	OSProjectDomainName string `json:"projectDomainName"`
 
-	// Region is the OpenStack region whose Nova endpoint to use. May be empty
-	// for single-region clouds.
+	// Region is the OpenStack region whose Nova endpoint to use (OS_REGION_NAME).
+	// Required: the operator writes it to Spec.Region of VirtualMachines created
+	// from Nova state and refuses to start when it is empty.
 	Region string `json:"region,omitempty"`
 
 	// Microversion is the Nova API microversion to request, e.g. "2.66". Empty
@@ -246,4 +260,51 @@ func (c *openStackClient) FetchServer(ctx context.Context, uuid string) (*server
 		return nil, false, fmt.Errorf("getting nova server %s: %w", uuid, err)
 	}
 	return server, true, nil
+}
+
+// FetchFlavor returns the Nova flavor with the given id, including its extra
+// specs (fetched separately so correctness does not depend on microversion >=2.61
+// embedding extra_specs in the Get response).
+func (c *openStackClient) FetchFlavor(ctx context.Context, id string) (*flavors.Flavor, error) {
+	flavor, err := flavors.Get(ctx, c.compute, id).Extract()
+	if err != nil {
+		return nil, fmt.Errorf("getting nova flavor %s: %w", id, err)
+	}
+	specs, err := flavors.ListExtraSpecs(ctx, c.compute, id).Extract()
+	if err != nil {
+		return nil, fmt.Errorf("getting extra specs for nova flavor %s: %w", id, err)
+	}
+	flavor.ExtraSpecs = specs
+	return flavor, nil
+}
+
+// FetchFlavors lists all flavors (public + private, across all projects — the
+// technical user is an admin) and resolves each flavor's extra specs, returning
+// them keyed by id. Extra specs are fetched per flavor via ListExtraSpecs rather
+// than read off the list response, which only embeds them at microversion >=2.61.
+//
+// Flavor sets are small and stable, so listing via AllPages here is fine — unlike
+// the server listing, there is no large-response memory concern to hand-paginate
+// around.
+func (c *openStackClient) FetchFlavors(ctx context.Context) (map[string]*flavors.Flavor, error) {
+	pages, err := flavors.ListDetail(c.compute, flavors.ListOpts{AccessType: flavors.AllAccess}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing nova flavors: %w", err)
+	}
+	list, err := flavors.ExtractFlavors(pages)
+	if err != nil {
+		return nil, fmt.Errorf("extracting nova flavors: %w", err)
+	}
+
+	out := make(map[string]*flavors.Flavor, len(list))
+	for i := range list {
+		flavor := list[i]
+		specs, err := flavors.ListExtraSpecs(ctx, c.compute, flavor.ID).Extract()
+		if err != nil {
+			return nil, fmt.Errorf("getting extra specs for nova flavor %s: %w", flavor.ID, err)
+		}
+		flavor.ExtraSpecs = specs
+		out[flavor.ID] = &flavor
+	}
+	return out, nil
 }

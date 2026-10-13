@@ -66,8 +66,10 @@ func TestNewTransport_validCert(t *testing.T) {
 			if n := len(tr.TLSClientConfig.Certificates); n != 1 {
 				t.Fatalf("expected 1 client certificate, got %d", n)
 			}
-			if tr.TLSClientConfig.RootCAs == nil {
-				t.Error("expected the cert to be added to the root CA pool")
+			// RootCAs must stay nil so the system root pool is used to verify the
+			// server; the client cert belongs only in Certificates.
+			if tr.TLSClientConfig.RootCAs != nil {
+				t.Error("expected RootCAs to be nil (system pool), not replaced by the client cert")
 			}
 			if tr.TLSClientConfig.InsecureSkipVerify != selfSigned {
 				t.Errorf("InsecureSkipVerify = %v, want %v", tr.TLSClientConfig.InsecureSkipVerify, selfSigned)

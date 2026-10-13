@@ -167,14 +167,21 @@ const (
 )
 
 // VMSpec defines the desired state of a VirtualMachine.
-// Written by the Cortex placement API at scheduling time and updated on lifecycle events.
+// Region, AZ, and Resources are populated at creation time either by the Cortex
+// placement API (at scheduling time) or by the vm-operator's Nova sync
+// controller (when it adopts a pre-existing Nova server that has no CRD yet).
+// Both write the same create-time values; the fields are immutable thereafter.
 type VMSpec struct {
 	// Region is the cloud region this VM is placed in.
+	// Set once at creation by the Cortex placement API or the vm-operator's
+	// Nova sync controller; immutable afterwards.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
 	Region string `json:"region"`
 
 	// AZ is the Nova availability zone the VM was scheduled into.
+	// Set once at creation by the Cortex placement API or the vm-operator's
+	// Nova sync controller; immutable afterwards.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="az is immutable"
 	AZ string `json:"az"`
@@ -189,6 +196,8 @@ type VMSpec struct {
 
 	// Resources describes the compute resources requested by the VM.
 	// Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
+	// Set at creation by the Cortex placement API or the vm-operator's Nova sync
+	// controller (which derives them from the Nova flavor).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="\"cpu\" in self && \"memory\" in self",message="both cpu and memory must be specified"
 	Resources map[ResourceName]resource.Quantity `json:"resources"`

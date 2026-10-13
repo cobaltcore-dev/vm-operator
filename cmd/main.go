@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"time"
@@ -121,46 +122,69 @@ func main() {
 	}
 	metrics.Registry.MustRegister(multiclusterMonitor)
 
-	// Nova metrics: created once, injected into the controllers and the metered
-	// OpenStack client, and registered once with the controller-runtime registry
-	// (mirroring the multicluster monitor above).
-	novaMetrics := nova.NewMetrics()
-	metrics.Registry.MustRegister(novaMetrics)
+	// Nova sync is optional: the Helm chart only mounts the OpenStack config and
+	// passes --openstack-config when openstack.enabled=true. When disabled, the
+	// flag keeps its default path and the file is simply absent, so we detect that
+	// and skip the Nova controllers rather than crashing on a missing config.
+	if _, statErr := os.Stat(openstackConfigPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			setupLog.Info("openstack config not found, nova sync disabled", "path", openstackConfigPath)
+		} else {
+			// A permission or other stat error is a real misconfiguration, not an
+			// intentional opt-out — fail loudly rather than silently skipping.
+			setupLog.Error(statErr, "unable to stat openstack config", "path", openstackConfigPath)
+			os.Exit(1)
+		}
+	} else {
+		// Nova metrics: created once, injected into the controllers and the metered
+		// OpenStack client, and registered once with the controller-runtime registry
+		// (mirroring the multicluster monitor above).
+		novaMetrics := nova.NewMetrics()
+		metrics.Registry.MustRegister(novaMetrics)
 
-	// Load the OpenStack client configuration (mounted from a Secret) and build
-	// the Nova client the sync controller uses.
-	openstackConfig, err := config.Load[nova.OpenStackClientConfig](openstackConfigPath)
-	if err != nil {
-		setupLog.Error(err, "unable to load openstack config", "path", openstackConfigPath)
-		os.Exit(1)
-	}
-	openstackClient, err := nova.NewOpenStackClient(ctx, openstackConfig)
-	if err != nil {
-		setupLog.Error(err, "unable to create openstack client")
-		os.Exit(1)
-	}
-	// Instrument the Nova API calls (count, latency, outcome) via a decorator so
-	// the gophercloud client stays metrics-free.
-	meteredOpenstackClient := nova.NewMeteredOpenStackClient(openstackClient, novaMetrics)
+		// Load the OpenStack client configuration (mounted from a Secret) and build
+		// the Nova client the sync controller uses.
+		openstackConfig, err := config.Load[nova.OpenStackClientConfig](openstackConfigPath)
+		if err != nil {
+			setupLog.Error(err, "unable to load openstack config", "path", openstackConfigPath)
+			os.Exit(1)
+		}
+		// The region is written to Spec.Region of VirtualMachines created from Nova
+		// state, so it is a hard requirement when Nova sync is enabled.
+		if openstackConfig.Region == "" {
+			setupLog.Error(errors.New("missing region"),
+				"openstack region (OS_REGION_NAME) is required when openstack is enabled")
+			os.Exit(1)
+		}
+		openstackClient, err := nova.NewOpenStackClient(ctx, openstackConfig)
+		if err != nil {
+			setupLog.Error(err, "unable to create openstack client")
+			os.Exit(1)
+		}
+		// Instrument the Nova API calls (count, latency, outcome) via a decorator so
+		// the gophercloud client stays metrics-free.
+		meteredOpenstackClient := nova.NewMeteredOpenStackClient(openstackClient, novaMetrics)
 
-	if err := (&nova.Controller{
-		Client:    multiclusterClient,
-		Scheme:    mgr.GetScheme(),
-		OpenStack: meteredOpenstackClient,
-		Interval:  novaSyncInterval,
-		Metrics:   novaMetrics,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "nova")
-		os.Exit(1)
-	}
+		if err := (&nova.Controller{
+			Client:    multiclusterClient,
+			Scheme:    mgr.GetScheme(),
+			OpenStack: meteredOpenstackClient,
+			Region:    openstackConfig.Region,
+			Interval:  novaSyncInterval,
+			Metrics:   novaMetrics,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "nova")
+			os.Exit(1)
+		}
 
-	if err := (&nova.CleanupController{
-		Client:  multiclusterClient,
-		Scheme:  mgr.GetScheme(),
-		Metrics: novaMetrics,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "nova-cleanup")
-		os.Exit(1)
+		if err := (&nova.CleanupController{
+			Client:  multiclusterClient,
+			Scheme:  mgr.GetScheme(),
+			Metrics: novaMetrics,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "nova-cleanup")
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

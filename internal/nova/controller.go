@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -59,6 +61,11 @@ type Controller struct {
 
 	// OpenStack is the Nova API the poll loop and Reconcile talk to.
 	OpenStack OpenStackClient
+
+	// Region is the OpenStack region this operator manages (from the client
+	// config, OS_REGION_NAME). It is written to Spec.Region of VirtualMachines
+	// created from Nova state, so it must be set.
+	Region string
 
 	// Interval is how often the poll loop lists Nova. Values below MinInterval
 	// are clamped; a non-positive value falls back to DefaultInterval.
@@ -171,9 +178,50 @@ func (c *Controller) syncExisting(ctx context.Context, log logr.Logger, vm *v1al
 
 // createFromServer creates a new resource carrying the fields Nova provides,
 // then records the sync outcome on its status.
+//
+// Besides the Nova-derived fields (via applyNovaState), it must populate the
+// VMSpec fields the CRD requires at creation and the placement fields derived
+// from Nova — Region, AZ, Resources, HypervisorType, and TargetHost — since no
+// other actor has written them for a server that exists in Nova but has no CRD
+// yet. These are immutable afterwards, so they are set here exactly once and
+// never touched by applyNovaState on subsequent syncs.
+//
+// Creation is skipped (not errored, which would hot-loop) when the server cannot
+// yield a valid resource:
+//   - no availability zone (e.g. not yet scheduled, or shelved), or
+//   - a flavor whose hypervisor type is not one this operator manages (qemu/ch).
+//
+// The next poll re-enqueues it if its state later changes.
 func (c *Controller) createFromServer(ctx context.Context, log logr.Logger, uuid string, server *servers.Server) error {
+	az := server.AvailabilityZone
+	if az == "" {
+		log.V(1).Info("skipping create: nova server has no availability zone yet", "name", uuid)
+		return nil
+	}
+
+	flavorID := stringField(server.Flavor, "id")
+	if flavorID == "" {
+		return fmt.Errorf("nova server %s has no flavor id", uuid)
+	}
+	flavor, err := c.OpenStack.FetchFlavor(ctx, flavorID)
+	if err != nil {
+		return fmt.Errorf("fetching flavor for VirtualMachine %s: %w", uuid, err)
+	}
+
+	hypervisorType, ok := hypervisorTypeFromFlavor(flavor)
+	if !ok {
+		log.V(1).Info("skipping create: nova server flavor is not a managed hypervisor type",
+			"name", uuid, "flavor", flavorID)
+		return nil
+	}
+
 	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: uuid}}
 	applyNovaState(vm, server)
+	vm.Spec.AZ = az
+	vm.Spec.Region = c.Region
+	vm.Spec.Resources = resourcesFromFlavor(flavor)
+	vm.Spec.HypervisorType = &hypervisorType
+	vm.Spec.TargetHost = hostRef(server.Host) // nil when the server reports no host
 
 	if err := c.Create(ctx, vm); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -191,6 +239,16 @@ func (c *Controller) createFromServer(ctx context.Context, log logr.Logger, uuid
 	}
 	log.V(1).Info("created VirtualMachine from nova", "name", uuid)
 	return nil
+}
+
+// resourcesFromFlavor maps a Nova flavor's vCPU and RAM onto the cpu/memory
+// resources the CRD requires.
+func resourcesFromFlavor(flavor *flavors.Flavor) map[v1alpha1.ResourceName]resource.Quantity {
+	return map[v1alpha1.ResourceName]resource.Quantity{
+		v1alpha1.ResourceCPU: *resource.NewQuantity(int64(flavor.VCPUs), resource.DecimalSI),
+		// RAM is reported in MB; store memory in bytes (ResourceMemory is bytes).
+		v1alpha1.ResourceMemory: *resource.NewQuantity(int64(flavor.RAM)*1024*1024, resource.BinarySI),
+	}
 }
 
 // persist writes the difference between base and vm back to the apiserver.
@@ -306,6 +364,10 @@ func (c *Controller) Start(ctx context.Context) error {
 // other lacks). It performs no per-server Nova calls — that is Reconcile's job.
 // Errors are logged rather than returned so a transient failure does not tear
 // down the loop.
+//
+// Servers whose flavor is not a hypervisor type this operator manages (qemu/ch)
+// are dropped from the snapshot before diffing, so they are never enqueued. The
+// flavor listing (public + private) is fetched once per poll for this filter.
 func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 	start := time.Now()
 
@@ -317,6 +379,15 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 		return
 	}
 
+	flavorsByID, err := c.OpenStack.FetchFlavors(ctx)
+	if err != nil {
+		log.Error(err, "failed to list flavors from nova")
+		c.Metrics.recordPollError("fetch_flavors")
+		c.Metrics.observePoll("error", start)
+		return
+	}
+	managedServers := managedServersOnly(novaServers, flavorsByID)
+
 	var vmList v1alpha1.VirtualMachineList
 	if err := c.List(ctx, &vmList); err != nil {
 		log.Error(err, "failed to list VirtualMachines")
@@ -325,14 +396,15 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 		return
 	}
 
-	uuids := uuidsToReconcile(novaServers, vmList.Items)
+	uuids := uuidsToReconcile(managedServers, vmList.Items)
 	// The fetch+list+diff — the work that can fail — has succeeded here, so
 	// record the snapshot gauges and the poll duration now rather than after
 	// the enqueue loop (which can return early on ctx cancellation).
-	c.Metrics.setPollGauges(len(novaServers), len(vmList.Items), len(uuids))
+	c.Metrics.setPollGauges(len(managedServers), len(vmList.Items), len(uuids))
 	c.Metrics.observePoll("success", start)
 	log.V(1).Info("computed reconcile set",
-		"servers", len(novaServers), "vms", len(vmList.Items), "toReconcile", len(uuids))
+		"servers", len(novaServers), "managedServers", len(managedServers),
+		"vms", len(vmList.Items), "toReconcile", len(uuids))
 
 	for _, uuid := range uuids {
 		// The VM CRD is named after the Nova server uuid, so an event carrying a
@@ -347,6 +419,21 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 			return
 		}
 	}
+}
+
+// managedServersOnly returns the subset of servers whose flavor is a hypervisor
+// type this operator manages (qemu/ch), using the flavor listing keyed by id. A
+// server whose flavor id is unknown or carries an unsupported hypervisor type is
+// dropped, so it is never enqueued or created.
+func managedServersOnly(novaServers []servers.Server, flavorsByID map[string]*flavors.Flavor) []servers.Server {
+	out := make([]servers.Server, 0, len(novaServers))
+	for i := range novaServers {
+		flavorID := stringField(novaServers[i].Flavor, "id")
+		if _, ok := hypervisorTypeFromFlavor(flavorsByID[flavorID]); ok {
+			out = append(out, novaServers[i])
+		}
+	}
+	return out
 }
 
 // uuidsToReconcile returns, in stable order, the uuids whose VM CRD does not

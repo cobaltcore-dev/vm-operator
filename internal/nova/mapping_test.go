@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -140,5 +141,34 @@ func TestFlavorImageFromServer_missingKeys(t *testing.T) {
 	}
 	if img := imageFromServer(server); img.UUID != "" {
 		t.Errorf("expected empty image, got %+v", img)
+	}
+}
+
+func TestHypervisorTypeFromFlavor(t *testing.T) {
+	spec := func(v string) *flavors.Flavor {
+		return &flavors.Flavor{ExtraSpecs: map[string]string{hypervisorTypeExtraSpec: v}}
+	}
+
+	tests := []struct {
+		name   string
+		flavor *flavors.Flavor
+		want   v1alpha1.HypervisorType
+		wantOK bool
+	}{
+		{"qemu", spec("qemu"), v1alpha1.HypervisorTypeQEMU, true},
+		{"ch", spec("ch"), v1alpha1.HypervisorTypeCH, true},
+		{"uppercase and spaces", spec("  QEMU "), v1alpha1.HypervisorTypeQEMU, true},
+		{"unmanaged value", spec("vmware"), "", false},
+		{"missing extra spec", &flavors.Flavor{ExtraSpecs: map[string]string{}}, "", false},
+		{"nil extra specs", &flavors.Flavor{}, "", false},
+		{"nil flavor", nil, "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := hypervisorTypeFromFlavor(tc.flavor)
+			if ok != tc.wantOK || got != tc.want {
+				t.Errorf("hypervisorTypeFromFlavor() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
+			}
+		})
 	}
 }

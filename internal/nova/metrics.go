@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -32,6 +33,8 @@ const (
 const (
 	apiMethodFetchServers = "fetch_servers"
 	apiMethodFetchServer  = "fetch_server"
+	apiMethodFetchFlavor  = "fetch_flavor"
+	apiMethodFetchFlavors = "fetch_flavors"
 
 	apiOutcomeSuccess  = "success"
 	apiOutcomeNotFound = "notfound" // FetchServer: Nova has no such server
@@ -238,4 +241,28 @@ func (c *meteredOpenStackClient) FetchServer(ctx context.Context, uuid string) (
 	}
 	c.metrics.observeAPIRequest(apiMethodFetchServer, outcome, start)
 	return server, found, err
+}
+
+// FetchFlavor records the flavor get around the delegate.
+func (c *meteredOpenStackClient) FetchFlavor(ctx context.Context, id string) (*flavors.Flavor, error) {
+	start := time.Now()
+	flavor, err := c.delegate.FetchFlavor(ctx, id)
+	outcome := apiOutcomeSuccess
+	if err != nil {
+		outcome = apiOutcomeError
+	}
+	c.metrics.observeAPIRequest(apiMethodFetchFlavor, outcome, start)
+	return flavor, err
+}
+
+// FetchFlavors records the flavor list around the delegate.
+func (c *meteredOpenStackClient) FetchFlavors(ctx context.Context) (map[string]*flavors.Flavor, error) {
+	start := time.Now()
+	out, err := c.delegate.FetchFlavors(ctx)
+	outcome := apiOutcomeSuccess
+	if err != nil {
+		outcome = apiOutcomeError
+	}
+	c.metrics.observeAPIRequest(apiMethodFetchFlavors, outcome, start)
+	return out, err
 }

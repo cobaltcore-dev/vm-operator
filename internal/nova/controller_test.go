@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -38,6 +39,9 @@ type fakeOpenStackClient struct {
 	calls  int              // FetchServers call count
 
 	getErr map[string]error // optional per-uuid FetchServer errors
+
+	flavors   map[string]*flavors.Flavor // flavors keyed by id, for FetchFlavor/FetchFlavors
+	flavorErr error                      // optional FetchFlavor/FetchFlavors error
 }
 
 func (f *fakeOpenStackClient) FetchServers(context.Context) ([]servers.Server, error) {
@@ -58,6 +62,31 @@ func (f *fakeOpenStackClient) FetchServer(_ context.Context, uuid string) (*serv
 		}
 	}
 	return nil, false, nil
+}
+
+func (f *fakeOpenStackClient) FetchFlavor(_ context.Context, id string) (*flavors.Flavor, error) {
+	if f.flavorErr != nil {
+		return nil, f.flavorErr
+	}
+	return f.flavors[id], nil
+}
+
+func (f *fakeOpenStackClient) FetchFlavors(context.Context) (map[string]*flavors.Flavor, error) {
+	if f.flavorErr != nil {
+		return nil, f.flavorErr
+	}
+	return f.flavors, nil
+}
+
+// qemuFlavor is a flavor fixture whose extra specs mark it as a managed (qemu)
+// hypervisor type, with the given id, vCPUs, and RAM (MB).
+func qemuFlavor(id string, vcpus, ramMB int) *flavors.Flavor {
+	return &flavors.Flavor{
+		ID:         id,
+		VCPUs:      vcpus,
+		RAM:        ramMB,
+		ExtraSpecs: map[string]string{hypervisorTypeExtraSpec: "qemu"},
+	}
 }
 
 // newTestScheme builds a runtime scheme with the VM CRD registered.
@@ -111,24 +140,28 @@ func TestController_poll_enqueuesOutOfSyncUUIDs(t *testing.T) {
 
 	scheme := newTestScheme(t)
 
+	flavorRef := map[string]any{"id": "f"}
 	// inSync: CRD already reflects the server.
 	inSyncVM := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: inSync}}
-	applyNovaState(inSyncVM, &servers.Server{ID: inSync, Status: "ACTIVE", Host: "compute-1"})
+	applyNovaState(inSyncVM, &servers.Server{ID: inSync, Status: "ACTIVE", Host: "compute-1", Flavor: flavorRef})
 	// outOfSync: CRD status differs from the server.
 	outVM := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: outOfSync}}
-	applyNovaState(outVM, &servers.Server{ID: outOfSync, Status: "ACTIVE", Host: "compute-1"})
+	applyNovaState(outVM, &servers.Server{ID: outOfSync, Status: "ACTIVE", Host: "compute-1", Flavor: flavorRef})
 	// orphan: CRD carries Nova fields but the server is gone.
 	orphanVM := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: orphan}}
-	applyNovaState(orphanVM, &servers.Server{ID: orphan, Status: "ACTIVE", Host: "compute-9"})
+	applyNovaState(orphanVM, &servers.Server{ID: orphan, Status: "ACTIVE", Host: "compute-9", Flavor: flavorRef})
 
 	c := &Controller{
 		Client: newTestClient(t, scheme, inSyncVM, outVM, orphanVM),
-		OpenStack: &fakeOpenStackClient{result: []servers.Server{
-			{ID: inSync, Status: "ACTIVE", Host: "compute-1"},     // unchanged
-			{ID: outOfSync, Status: "SHUTOFF", Host: "compute-1"}, // status changed
-			{ID: novaOnly, Status: "ACTIVE", Host: "compute-2"},   // no CRD yet
-			// orphan absent from Nova
-		}},
+		OpenStack: &fakeOpenStackClient{
+			result: []servers.Server{
+				{ID: inSync, Status: "ACTIVE", Host: "compute-1", Flavor: flavorRef},     // unchanged
+				{ID: outOfSync, Status: "SHUTOFF", Host: "compute-1", Flavor: flavorRef}, // status changed
+				{ID: novaOnly, Status: "ACTIVE", Host: "compute-2", Flavor: flavorRef},   // no CRD yet
+				// orphan absent from Nova
+			},
+			flavors: map[string]*flavors.Flavor{"f": qemuFlavor("f", 2, 2048)},
+		},
 		eventCh: make(chan event.GenericEvent, 8),
 	}
 
@@ -170,9 +203,12 @@ func TestController_poll_respectsContextCancellation(t *testing.T) {
 	// With an unbuffered channel and no reader, poll must unblock when the
 	// context is cancelled rather than deadlocking on the channel send.
 	c := &Controller{
-		Client:    newTestClient(t, newTestScheme(t)),
-		OpenStack: &fakeOpenStackClient{result: []servers.Server{{ID: "stuck-uuid", Status: "ACTIVE"}}},
-		eventCh:   make(chan event.GenericEvent),
+		Client: newTestClient(t, newTestScheme(t)),
+		OpenStack: &fakeOpenStackClient{
+			result:  []servers.Server{{ID: "stuck-uuid", Status: "ACTIVE", Flavor: map[string]any{"id": "f"}}},
+			flavors: map[string]*flavors.Flavor{"f": qemuFlavor("f", 2, 2048)},
+		},
+		eventCh: make(chan event.GenericEvent),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -229,9 +265,19 @@ func TestController_Reconcile_createsMissingVM(t *testing.T) {
 
 	scheme := newTestScheme(t)
 	c := &Controller{
-		Client:    newTestClient(t, scheme), // no CRD seeded
-		Scheme:    scheme,
-		OpenStack: &fakeOpenStackClient{result: []servers.Server{{ID: name, Status: "BUILD"}}},
+		Client: newTestClient(t, scheme), // no CRD seeded
+		Scheme: scheme,
+		Region: "qa-de-1",
+		OpenStack: &fakeOpenStackClient{
+			result: []servers.Server{{
+				ID:               name,
+				Status:           "BUILD",
+				AvailabilityZone: "qa-de-1a",
+				Host:             "compute-1",
+				Flavor:           map[string]any{"id": "flavor-uuid"},
+			}},
+			flavors: map[string]*flavors.Flavor{"flavor-uuid": qemuFlavor("flavor-uuid", 4, 8192)},
+		},
 	}
 
 	if _, err := c.Reconcile(context.Background(), request()); err != nil {
@@ -242,7 +288,86 @@ func TestController_Reconcile_createsMissingVM(t *testing.T) {
 	if got.Status.Nova == nil || got.Status.Nova.Status != "BUILD" {
 		t.Errorf("created VM status.nova = %+v, want BUILD", got.Status.Nova)
 	}
+	// Required spec fields must be derived so the Create passes CRD validation.
+	if got.Spec.AZ != "qa-de-1a" {
+		t.Errorf("spec.az = %q, want qa-de-1a", got.Spec.AZ)
+	}
+	if got.Spec.Region != "qa-de-1" {
+		t.Errorf("spec.region = %q, want qa-de-1 (from controller config)", got.Spec.Region)
+	}
+	if got.Spec.HypervisorType == nil || *got.Spec.HypervisorType != v1alpha1.HypervisorTypeQEMU {
+		t.Errorf("spec.hypervisorType = %v, want QEMU", got.Spec.HypervisorType)
+	}
+	if got.Spec.TargetHost == nil || got.Spec.TargetHost.Name != "compute-1" {
+		t.Errorf("spec.targetHost = %+v, want name compute-1", got.Spec.TargetHost)
+	}
+	cpu := got.Spec.Resources[v1alpha1.ResourceCPU]
+	if cpu.Value() != 4 {
+		t.Errorf("spec.resources[cpu] = %s, want 4", cpu.String())
+	}
+	mem := got.Spec.Resources[v1alpha1.ResourceMemory]
+	if mem.Value() != 8192*1024*1024 {
+		t.Errorf("spec.resources[memory] = %s, want 8192Mi in bytes", mem.String())
+	}
 	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
+}
+
+func TestController_Reconcile_skipsCreateWithoutAZ(t *testing.T) {
+	scheme := newTestScheme(t)
+	c := &Controller{
+		Client: newTestClient(t, scheme), // no CRD seeded
+		Scheme: scheme,
+		Region: "qa-de-1",
+		// Server has no availability zone yet (e.g. not scheduled); we cannot
+		// derive a valid az, so creation must be skipped (not errored).
+		OpenStack: &fakeOpenStackClient{
+			result:  []servers.Server{{ID: testVMUUID, Status: "BUILD", Flavor: map[string]any{"id": "flavor-uuid"}}},
+			flavors: map[string]*flavors.Flavor{"flavor-uuid": qemuFlavor("flavor-uuid", 4, 8192)},
+		},
+	}
+
+	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile should not error when AZ is missing, got: %v", err)
+	}
+
+	var vm v1alpha1.VirtualMachine
+	err := c.Get(context.Background(), types.NamespacedName{Name: testVMUUID}, &vm)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected no VM to be created without an AZ, got err=%v", err)
+	}
+}
+
+func TestController_Reconcile_skipsCreateForUnmanagedHypervisor(t *testing.T) {
+	scheme := newTestScheme(t)
+	c := &Controller{
+		Client: newTestClient(t, scheme), // no CRD seeded
+		Scheme: scheme,
+		Region: "qa-de-1",
+		// Flavor has no (managed) hypervisor type, so the server is not ours and
+		// Reconcile must skip creation without erroring.
+		OpenStack: &fakeOpenStackClient{
+			result: []servers.Server{{
+				ID:               testVMUUID,
+				Status:           "ACTIVE",
+				AvailabilityZone: "qa-de-1a",
+				Flavor:           map[string]any{"id": "vmware-uuid"},
+			}},
+			flavors: map[string]*flavors.Flavor{"vmware-uuid": {
+				ID:         "vmware-uuid",
+				ExtraSpecs: map[string]string{hypervisorTypeExtraSpec: "vmware"},
+			}},
+		},
+	}
+
+	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile should not error for an unmanaged hypervisor, got: %v", err)
+	}
+
+	var vm v1alpha1.VirtualMachine
+	err := c.Get(context.Background(), types.NamespacedName{Name: testVMUUID}, &vm)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected no VM to be created for an unmanaged hypervisor, got err=%v", err)
+	}
 }
 
 func TestController_Reconcile_clearsFieldsWhenServerGone(t *testing.T) {

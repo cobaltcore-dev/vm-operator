@@ -4,14 +4,38 @@
 package nova
 
 import (
+	"strings"
 	"time"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
 )
+
+// hypervisorTypeExtraSpec is the flavor extra spec that records which hypervisor
+// a flavor targets. Only "qemu" and "ch" are managed by this operator.
+const hypervisorTypeExtraSpec = "capabilities:hypervisor_type"
+
+// hypervisorTypeFromFlavor maps a flavor's capabilities:hypervisor_type extra
+// spec onto a VMSpec HypervisorType. ok is false when the flavor is nil, lacks
+// the extra spec, or carries an unsupported value — such servers are not managed
+// by this operator and must be skipped.
+func hypervisorTypeFromFlavor(flavor *flavors.Flavor) (v1alpha1.HypervisorType, bool) {
+	if flavor == nil {
+		return "", false
+	}
+	switch strings.ToLower(strings.TrimSpace(flavor.ExtraSpecs[hypervisorTypeExtraSpec])) {
+	case "qemu":
+		return v1alpha1.HypervisorTypeQEMU, true
+	case "ch":
+		return v1alpha1.HypervisorTypeCH, true
+	default:
+		return "", false
+	}
+}
 
 // This file is the single place that knows how a Nova server maps onto a
 // VirtualMachine resource. Both the poll loop (to decide whether a reconcile is
