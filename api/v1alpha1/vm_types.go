@@ -381,6 +381,11 @@ type NovaStatus struct {
 	// +kubebuilder:validation:Optional
 	Status string `json:"status,omitempty"`
 
+	// Host is the compute host Nova reports the instance on. Distinct from
+	// Status.Host, which is the actual runtime host derived elsewhere.
+	// +kubebuilder:validation:Optional
+	Host string `json:"host,omitempty"`
+
 	// LastSyncTime is the timestamp of the last successful sync from Nova.
 	// +kubebuilder:validation:Optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
@@ -411,16 +416,12 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.memory",name="Memory",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].status",name="Running",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].reason",name="State",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.host.name",name="NovaHost",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.nova.host",name="NovaHost",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".spec.targetHost.name",name="TargetHost",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].status",name="NovaInSync",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaSynced\")].status",name="NovaSynced",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.nova.status",name="NovaState",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.ownership.project",name="Project",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Migrating\")].status",name="Migrating",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Resizing\")].status",name="Resizing",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Scheduled\")].reason",name="Scheduled",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].reason",name="NovaInSyncReason",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.nova.lastSyncTime",name="NovaLastSync",type="date",priority=1
 
 // VirtualMachine tracks a Nova VM from initial placement through its full lifetime.

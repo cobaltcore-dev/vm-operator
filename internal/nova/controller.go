@@ -176,6 +176,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// re-establish the Nova status (from the conversion) and record it separately.
 		created.Status.Nova = &v1alpha1.NovaStatus{
 			Status:       conv.Status.Nova.Status,
+			Host:         conv.Status.Nova.Host,
 			LastSyncTime: new(metav1.Now()),
 		}
 		meta.SetStatusCondition(&created.Status.Conditions, metav1.Condition{

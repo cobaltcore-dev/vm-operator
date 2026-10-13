@@ -88,8 +88,9 @@ func ConvertToVirtualMachine(server *servers.Server, flavor *flavors.Flavor, reg
 			},
 		},
 		Status: v1alpha1.VMStatus{
-			Host: &v1alpha1.HostRef{Name: server.Host},
-			Nova: &v1alpha1.NovaStatus{Status: server.Status},
+			// Status.Host (the runtime host) is owned elsewhere; the nova host goes to
+			// Status.Nova.Host.
+			Nova: &v1alpha1.NovaStatus{Status: server.Status, Host: server.Host},
 		},
 	}}, nil
 }
@@ -102,22 +103,26 @@ func (c ConvertedVirtualMachine) HasChanged(vm *v1alpha1.VirtualMachine) bool {
 	want := c.Spec.Nova
 	got := vm.Spec.Nova
 	want.Flavor, got.Flavor = v1alpha1.Flavor{}, v1alpha1.Flavor{}
-	// A nil Status.Nova compares as the empty status so a never-synced resource is clean.
-	gotStatus := ""
+	// A nil Status.Nova compares as empty so a never-synced resource is clean.
+	var gotStatus, gotHost string
 	if vm.Status.Nova != nil {
-		gotStatus = vm.Status.Nova.Status
+		gotStatus, gotHost = vm.Status.Nova.Status, vm.Status.Nova.Host
 	}
-	return !equality.Semantic.DeepEqual(want, got) || c.Status.Nova.Status != gotStatus
+	return !equality.Semantic.DeepEqual(want, got) ||
+		c.Status.Nova.Status != gotStatus || c.Status.Nova.Host != gotHost
 }
 
-// PatchInto applies the sync-owned fields (Spec.Nova and Status.Nova.Status) onto
-// vm, leaving the immutable spec, conditions, Status.Host and LastSyncTime
-// untouched.
+// PatchInto applies the sync-owned fields (Spec.Nova and Status.Nova) onto vm,
+// leaving the immutable spec, conditions, Status.Host and LastSyncTime untouched.
 func (c ConvertedVirtualMachine) PatchInto(vm *v1alpha1.VirtualMachine) {
 	var lastSync *metav1.Time
 	if vm.Status.Nova != nil {
 		lastSync = vm.Status.Nova.LastSyncTime // preserved so cleanup can measure orphan TTL.
 	}
 	vm.Spec.Nova = c.Spec.Nova
-	vm.Status.Nova = &v1alpha1.NovaStatus{Status: c.Status.Nova.Status, LastSyncTime: lastSync}
+	vm.Status.Nova = &v1alpha1.NovaStatus{
+		Status:       c.Status.Nova.Status,
+		Host:         c.Status.Nova.Host,
+		LastSyncTime: lastSync,
+	}
 }

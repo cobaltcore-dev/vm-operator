@@ -38,7 +38,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Running")].reason
       name: State
       type: string
-    - jsonPath: .status.host.name
+    - jsonPath: .status.nova.host
       name: NovaHost
       priority: 1
       type: string
@@ -46,8 +46,8 @@ spec:
       name: TargetHost
       priority: 1
       type: string
-    - jsonPath: .status.conditions[?(@.type=="NovaInSync")].status
-      name: NovaInSync
+    - jsonPath: .status.conditions[?(@.type=="NovaSynced")].status
+      name: NovaSynced
       priority: 1
       type: string
     - jsonPath: .status.nova.status
@@ -59,22 +59,6 @@ spec:
       type: date
     - jsonPath: .spec.nova.ownership.project
       name: Project
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Migrating")].status
-      name: Migrating
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Resizing")].status
-      name: Resizing
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Scheduled")].reason
-      name: Scheduled
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="NovaInSync")].reason
-      name: NovaInSyncReason
       priority: 1
       type: string
     - jsonPath: .status.nova.lastSyncTime
@@ -512,6 +496,11 @@ spec:
                 description: Nova holds the last known state of this VM as reported
                   by Nova.
                 properties:
+                  host:
+                    description: |-
+                      Host is the compute host Nova reports the instance on. Distinct from
+                      Status.Host, which is the actual runtime host derived elsewhere.
+                    type: string
                   lastSyncTime:
                     description: LastSyncTime is the timestamp of the last successful
                       sync from Nova.

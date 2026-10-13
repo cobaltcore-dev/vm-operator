@@ -138,8 +138,12 @@ func TestConvertToVirtualMachine_setsNameAndImmutableSpec(t *testing.T) {
 	if vm.Spec.TargetHost == nil || vm.Spec.TargetHost.Name != "compute-1" {
 		t.Errorf("targetHost = %+v", vm.Spec.TargetHost)
 	}
-	if vm.Status.Host == nil || vm.Status.Host.Name != "compute-1" {
-		t.Errorf("status.host = %+v, want compute-1 (set on create)", vm.Status.Host)
+	// The nova host goes to Status.Nova.Host; Status.Host (runtime host) is owned elsewhere.
+	if vm.Status.Nova == nil || vm.Status.Nova.Host != "compute-1" {
+		t.Errorf("status.nova.host = %+v, want compute-1", vm.Status.Nova)
+	}
+	if vm.Status.Host != nil {
+		t.Errorf("status.host = %+v, want nil (not owned by the nova syncer)", vm.Status.Host)
 	}
 	if cpu := vm.Spec.Resources[v1alpha1.ResourceCPU]; cpu.Value() != 4 {
 		t.Errorf("resources[cpu] = %s, want 4", cpu.String())
