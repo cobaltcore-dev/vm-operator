@@ -5,12 +5,14 @@ package nova
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // OpenStackClient abstracts the OpenStack Nova API as far as this controller
@@ -141,21 +143,95 @@ func NewOpenStackClient(ctx context.Context, cfg OpenStackClientConfig) (OpenSta
 }
 
 // FetchServers lists all non-deleted Nova servers across all projects.
+//
+// It walks Nova's pagination by hand rather than through
+// gophercloud's servers.List(...).AllPages. AllPages accumulates every raw page
+// body and only extracts at the end; on clouds with many thousands of servers
+// that retains the full response set in memory at once, which we observed
+// leaking in another service. Here each page is decoded straight into the
+// result slice and its body closed before the next request, so only the
+// servers themselves (not their intermediate page bodies) are held.
+//
+// The technical user watches servers across all projects, so we request with
+// all_tenants. Nova excludes deleted servers by default, which is exactly the
+// live snapshot we want. Duplicate IDs across page boundaries (possible when
+// the server set shifts mid-walk) are dropped so callers never see the same
+// uuid twice.
 func (c *openStackClient) FetchServers(ctx context.Context) ([]servers.Server, error) {
-	// The technical user watches servers across all projects, so list with
-	// all_tenants. Nova excludes deleted servers by default, which is exactly
-	// the live snapshot we want.
-	opts := servers.ListOpts{AllTenants: true}
+	log := logf.FromContext(ctx)
 
-	page, err := servers.List(c.compute, opts).AllPages(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing nova servers: %w", err)
+	// ResourceBaseURL ends with a "/", so this yields e.g.
+	// ".../compute/v2.1/servers/detail?all_tenants=true".
+	initialURL := c.compute.ResourceBaseURL() + "servers/detail?all_tenants=true"
+	nextURL := &initialURL
+
+	var allServers []servers.Server
+	seen := make(map[string]struct{})
+
+	for nextURL != nil {
+		page, next, err := c.fetchServerPage(ctx, *nextURL)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range page {
+			if _, ok := seen[s.ID]; ok {
+				log.V(1).Info("skipping duplicate nova server", "id", s.ID)
+				continue
+			}
+			seen[s.ID] = struct{}{}
+			allServers = append(allServers, s)
+		}
+		nextURL = next
 	}
-	out, err := servers.ExtractServers(page)
+
+	return allServers, nil
+}
+
+// fetchServerPage fetches and decodes a single page of the detailed server
+// listing at url, returning the servers on that page and the URL of the next
+// page (nil when url is the last page). The response body is read and closed
+// before returning so no per-page state outlives the call.
+func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]servers.Server, *string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
-		return nil, fmt.Errorf("extracting nova servers: %w", err)
+		return nil, nil, fmt.Errorf("building nova servers request: %w", err)
 	}
-	return out, nil
+	req.Header.Set("X-Auth-Token", c.compute.Token())
+	if c.compute.Microversion != "" {
+		req.Header.Set("X-OpenStack-Nova-API-Version", c.compute.Microversion)
+	}
+
+	resp, err := c.compute.HTTPClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing nova servers: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("listing nova servers: unexpected status code %d", resp.StatusCode)
+	}
+
+	// servers.Server has a custom UnmarshalJSON, so decoding into it here is
+	// equivalent to servers.ExtractServers over an AllPages result.
+	var list struct {
+		Servers []servers.Server `json:"servers"`
+		Links   []struct {
+			Rel  string `json:"rel"`
+			Href string `json:"href"`
+		} `json:"servers_links"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, nil, fmt.Errorf("decoding nova servers: %w", err)
+	}
+
+	var next *string
+	for _, link := range list.Links {
+		if link.Rel == "next" {
+			href := link.Href
+			next = &href
+			break
+		}
+	}
+	return list.Servers, next, nil
 }
 
 // FetchServer returns the current state of a single Nova server. A 404 from
