@@ -63,6 +63,9 @@ spec:
             {{- end }}
             {{- if .Values.openstack.enabled }}
             - --openstack-config=/etc/vm-operator/openstack/openstack.json
+            {{- with .Values.nova.syncInterval }}
+            - --nova-sync-interval={{ . }}
+            {{- end }}
             {{- end }}
           ports:
             - name: metrics

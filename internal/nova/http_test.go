@@ -4,6 +4,7 @@
 package nova
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -82,7 +83,7 @@ func TestNewTransport_validCert(t *testing.T) {
 }
 
 func TestNewHTTPClient_noCert(t *testing.T) {
-	client, err := NewHTTPClient(HTTPClientConfig{})
+	client, err := NewHTTPClient(context.Background(), HTTPClientConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestNewHTTPClient_noCert(t *testing.T) {
 func TestNewHTTPClient_propagatesTransportError(t *testing.T) {
 	// A cert without a key makes NewTransport fail; NewHTTPClient must surface
 	// that rather than returning a half-built client.
-	client, err := NewHTTPClient(HTTPClientConfig{Cert: "cert-pem"})
+	client, err := NewHTTPClient(context.Background(), HTTPClientConfig{Cert: "cert-pem"})
 	if err == nil {
 		t.Fatal("expected NewHTTPClient to propagate the transport error")
 	}
@@ -124,7 +125,7 @@ func TestNewHTTPClient_tagsAndSendsRequests(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewHTTPClient(HTTPClientConfig{})
+	client, err := NewHTTPClient(context.Background(), HTTPClientConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

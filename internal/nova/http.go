@@ -4,11 +4,13 @@
 package nova
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
+
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // userAgent is the User-Agent value set on every outgoing HTTP request made
@@ -50,7 +52,7 @@ type requestLogger struct {
 
 // RoundTrip logs the request URL before making the request.
 func (lrt *requestLogger) RoundTrip(req *http.Request) (*http.Response, error) {
-	slog.Info("making http request", "url", req.URL.String())
+	logf.FromContext(req.Context()).Info("making http request", "url", req.URL.String())
 	return lrt.T.RoundTrip(req)
 }
 
@@ -115,13 +117,13 @@ func NewTransport(conf HTTPClientConfig) (*http.Transport, error) {
 
 // NewHTTPClient creates a new HTTP client with the given CA cert configuration
 // and logging for each request.
-func NewHTTPClient(conf HTTPClientConfig) (*http.Client, error) {
+func NewHTTPClient(ctx context.Context, conf HTTPClientConfig) (*http.Client, error) {
 	transport, err := NewTransport(conf)
 	if err != nil {
 		return nil, err
 	}
 	if conf.Cert == "" {
-		slog.Debug("making http requests without custom trusted cert bundle")
+		logf.FromContext(ctx).V(1).Info("making http requests without custom trusted cert bundle")
 	}
 	return &http.Client{Transport: &userAgentTransport{T: &requestLogger{T: transport}}}, nil
 }

@@ -132,7 +132,7 @@ func NewOpenStackClient(ctx context.Context, cfg OpenStackClientConfig) (OpenSta
 
 	// Install a custom HTTP client so we can trust a specific CA bundle,
 	// present a client certificate, and tag requests with our User-Agent.
-	httpClient, err := NewHTTPClient(cfg.HTTPClient)
+	httpClient, err := NewHTTPClient(ctx, cfg.HTTPClient)
 	if err != nil {
 		return nil, fmt.Errorf("configuring openstack http client: %w", err)
 	}

@@ -80,6 +80,7 @@ multicluster:
       home:
         gvks:
           - cobaltcore.cloud/v1alpha1/VirtualMachine
+          - cobaltcore.cloud/v1alpha1/VirtualMachineList
       # Resources managed in remote clusters. Each remote apiserver must accept
       # the manager ServiceAccount's tokens (see structured auth). VirtualMachine
       # writes are routed to the remote whose labels.availabilityZone matches the
@@ -93,9 +94,19 @@ multicluster:
       #     insecureSkipTLSVerify: false
       #     gvks:
       #       - cobaltcore.cloud/v1alpha1/VirtualMachine
+      #       - cobaltcore.cloud/v1alpha1/VirtualMachineList
       #     labels:
       #       availabilityZone: qa-de-1a
       remotes: []
+
+# [Nova]: tuning for the Nova sync controller. The controller only runs when
+# `openstack.enabled` is true (see below); these knobs are non-secret and are
+# passed to the manager as CLI flags rather than through the credentials Secret.
+nova:
+  # How often the sync controller polls Nova for changed servers. A non-positive
+  # value falls back to the manager's built-in default (300s), and values below
+  # one second are clamped. Rendered as the --nova-sync-interval flag.
+  syncInterval: 300s
 
 # [OpenStack]: credentials and endpoint for the Nova sync controller. The whole
 # `config` block below is rendered into a Kubernetes Secret and mounted into the

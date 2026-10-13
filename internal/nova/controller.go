@@ -36,7 +36,7 @@ const MinInterval = time.Second
 
 // DefaultInterval is used when the controller is configured with a
 // non-positive Interval.
-const DefaultInterval = 30 * time.Second
+const DefaultInterval = 300 * time.Second
 
 // Controller keeps VirtualMachine resources in sync with the Nova servers they
 // mirror.

@@ -45,9 +45,9 @@ for ctx in os.getenv('TILT_SAFE_CONTEXTS', '').split(','):
 current_context = k8s_context()
 if current_context not in safe_contexts:
     fail(
-        'Refusing to run against kubectl context "{}": it is not in the safe '
-        'list ({}). This guards against accidentally deploying to a shared or '
-        'production cluster. Switch to a local/throwaway context, or add this '
+        'Refusing to run against kubectl context "{}": it is not in the safe ' +
+        'list ({}). This guards against accidentally deploying to a shared or ' +
+        'production cluster. Switch to a local/throwaway context, or add this ' +
         'one via TILT_SAFE_CONTEXTS="{}".'.format(
             current_context,
             ', '.join(safe_contexts),
