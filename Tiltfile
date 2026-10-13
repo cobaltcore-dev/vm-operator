@@ -9,9 +9,7 @@
 #      (vendored dev chart), a Prometheus + Alertmanager instance, and Perses
 #      for dashboards,
 #   3. deploys the vm-operator Helm chart in dist/ (CRD + manager + rbac +
-#      monitoring + alerts), wiring the freshly built image into the manager,
-#   4. applies samples/vm.yaml so the operator has a VirtualMachine to
-#      reconcile.
+#      monitoring + alerts), wiring the freshly built image into the manager
 #
 # It deploys to whatever cluster your current kubectl context points at, so
 # make sure you are pointed at a throwaway/dev cluster before running `tilt up`.

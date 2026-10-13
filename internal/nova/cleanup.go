@@ -6,7 +6,6 @@ package nova
 import (
 	"context"
 	"errors"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -17,33 +16,28 @@ import (
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
 )
 
-// DefaultOrphanTTL is how long a resource whose Nova fields have been cleared
-// (its server is gone) is retained before the cleanup controller prunes it.
-const DefaultOrphanTTL = 30 * time.Minute
-
-// CleanupController watches VirtualMachine resources and prunes those the Nova
-// sync controller has marked as no longer backed by a live server:
-//
-//   - the Nova server was observed as DELETED: pruned immediately, and
-//   - the Nova fields were cleared (server vanished) and stayed empty for
-//     longer than OrphanTTL: pruned once the TTL elapses.
+// CleanupController watches VirtualMachine resources and prunes those whose Nova
+// server the sync controller observed as DELETED.
 //
 // It is intentionally separate from Controller: the sync controller only
 // records Nova's view, while deletion — an irreversible, outward-facing action —
-// is concentrated here behind an explicit TTL, so a transient Nova blip cannot
-// cascade into mass deletions.
+// is concentrated here behind a single, explicit condition.
+//
+// Deletion is gated solely on Nova reporting the server as DELETED. In
+// particular, a resource whose Nova fields are empty is NOT pruned: those
+// fields are empty both when a server has vanished and when the sync controller
+// simply has not populated them yet (a freshly created resource, or a slow or
+// stalled sync). The two cases are indistinguishable from the resource alone,
+// so treating an empty resource as deletable would race the sync controller and
+// discard VirtualMachines whose servers are still live in Nova.
 type CleanupController struct {
 	client.Client
 	Scheme *runtime.Scheme
-
-	// OrphanTTL overrides DefaultOrphanTTL when set.
-	OrphanTTL time.Duration
 }
 
-// Reconcile prunes a VirtualMachine if Nova considers its server gone. A
-// DELETED server is pruned at once; a resource whose Nova fields were cleared is
-// pruned once it has been orphaned for OrphanTTL, otherwise the request is
-// requeued for the remaining time.
+// Reconcile prunes a VirtualMachine only once Nova has observed its server in
+// the DELETED state. Any other state — including a resource whose Nova fields
+// have not yet been synced — is left untouched.
 func (c *CleanupController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -57,32 +51,11 @@ func (c *CleanupController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Nova observed the server as DELETED: prune immediately.
-	novaReportsDeleted := vm.Status.Nova != nil && vm.Status.Nova.Status == "DELETED"
-	if novaReportsDeleted {
+	// Only prune when Nova has explicitly observed the server as DELETED. An
+	// empty Nova status means "not yet synced", not "server gone", so it is
+	// deliberately left alone.
+	if vm.Status.Nova != nil && vm.Status.Nova.Status == "DELETED" {
 		log.V(1).Info("pruning VirtualMachine: nova reports server deleted", "name", vm.Name)
-		return ctrl.Result{}, client.IgnoreNotFound(c.Delete(ctx, &vm))
-	}
-
-	// Orphan: the sync controller cleared the Nova fields because the server
-	// vanished. Prune once it has been orphaned longer than the TTL, else
-	// requeue for the remaining time.
-	isOrphan := !novaFieldsSet(&vm)
-	if isOrphan {
-		// Measure the orphan age from the last successful sync (when the fields
-		// were cleared), falling back to the creation time.
-		orphanedSince := vm.CreationTimestamp
-		if vm.Status.Nova != nil && vm.Status.Nova.LastSyncTime != nil {
-			orphanedSince = *vm.Status.Nova.LastSyncTime
-		}
-		orphanTTL := DefaultOrphanTTL
-		if c.OrphanTTL > 0 {
-			orphanTTL = c.OrphanTTL
-		}
-		if age := time.Since(orphanedSince.Time); age < orphanTTL {
-			return ctrl.Result{RequeueAfter: orphanTTL - age}, nil
-		}
-		log.V(1).Info("pruning VirtualMachine: orphaned past ttl", "name", vm.Name, "ttl", orphanTTL)
 		return ctrl.Result{}, client.IgnoreNotFound(c.Delete(ctx, &vm))
 	}
 
