@@ -172,14 +172,18 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			c.Metrics.observeReconcile(outcomeError, start)
 			return ctrl.Result{}, fmt.Errorf("creating VirtualMachine %s: %w", req.Name, err)
 		}
-		// Create persists spec + metadata only, so record status separately.
+		// Create persists spec + metadata only and clears the status subresource, so
+		// re-establish the Nova status (from the conversion) and record it separately.
+		created.Status.Nova = &v1alpha1.NovaStatus{
+			Status:       conv.Status.Nova.Status,
+			LastSyncTime: new(metav1.Now()),
+		}
 		meta.SetStatusCondition(&created.Status.Conditions, metav1.Condition{
 			Type:    v1alpha1.ConditionTypeNovaSynced,
 			Status:  metav1.ConditionTrue,
 			Reason:  v1alpha1.ConditionReasonNovaSyncedUpToDate,
 			Message: "resource created from nova state",
 		})
-		created.Status.Nova.LastSyncTime = new(metav1.Now()) // Nova is non-nil post-conversion.
 		if err := c.Status().Update(ctx, created); err != nil {
 			c.Metrics.observeReconcile(outcomeError, start)
 			return ctrl.Result{}, fmt.Errorf("updating created VirtualMachine %s status: %w", req.Name, err)
