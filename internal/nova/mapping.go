@@ -52,10 +52,12 @@ func hypervisorTypeFromFlavor(flavor *flavors.Flavor) (v1alpha1.HypervisorType, 
 //
 // It touches only the fields this controller owns:
 //   - Spec.Nova: InstanceName, CreatedAt, Ownership, Flavor, Image
-//   - Status.Nova.Status and Status.Host
+//   - Status.Nova.Status
 //
 // Status.Nova.LastSyncTime is preserved (Reconcile owns it); conditions are
-// left untouched.
+// left untouched. Status.Host is NOT owned here: it reflects the host the VM is
+// actually running on, which the operator derives from libvirt/cloud-hypervisor
+// elsewhere, not from Nova's placement view.
 func applyNovaState(vm *v1alpha1.VirtualMachine, server *servers.Server) {
 	// LastSyncTime survives both populate and clear so the cleanup controller
 	// can measure the orphan TTL from it.
@@ -67,7 +69,6 @@ func applyNovaState(vm *v1alpha1.VirtualMachine, server *servers.Server) {
 	if server == nil {
 		vm.Spec.Nova = v1alpha1.NovaSpec{}
 		vm.Status.Nova = &v1alpha1.NovaStatus{LastSyncTime: lastSync}
-		vm.Status.Host = nil
 		return
 	}
 
@@ -79,7 +80,6 @@ func applyNovaState(vm *v1alpha1.VirtualMachine, server *servers.Server) {
 		Image:        imageFromServer(server),
 	}
 	vm.Status.Nova = &v1alpha1.NovaStatus{Status: server.Status, LastSyncTime: lastSync}
-	vm.Status.Host = hostRef(server.Host)
 }
 
 // novaStateDiffers reports whether applying server to vm would change any
@@ -105,7 +105,6 @@ func novaFieldsSet(vm *v1alpha1.VirtualMachine) bool {
 // separately). It is the one comparison the poll decisions are built on.
 func novaStateEqual(a, b *v1alpha1.VirtualMachine) bool {
 	return equality.Semantic.DeepEqual(a.Spec.Nova, b.Spec.Nova) &&
-		equality.Semantic.DeepEqual(a.Status.Host, b.Status.Host) &&
 		novaStatus(a) == novaStatus(b)
 }
 

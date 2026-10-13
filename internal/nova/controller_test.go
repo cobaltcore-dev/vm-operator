@@ -248,8 +248,10 @@ func TestController_Reconcile_syncsExistingVM(t *testing.T) {
 	if got.Status.Nova == nil || got.Status.Nova.Status != "ACTIVE" {
 		t.Errorf("status.nova = %+v, want ACTIVE", got.Status.Nova)
 	}
-	if got.Status.Host == nil || got.Status.Host.Name != "compute-1" {
-		t.Errorf("status.host = %+v, want compute-1", got.Status.Host)
+	// Status.Host is not owned by the nova syncer (it reflects the actual runtime
+	// host, derived elsewhere from libvirt/cloud-hypervisor), so it must stay unset.
+	if got.Status.Host != nil {
+		t.Errorf("status.host = %+v, want nil (not set by the nova syncer)", got.Status.Host)
 	}
 	if got.Spec.Nova.InstanceName != "web-1" || got.Spec.Nova.Ownership.Project != "proj" {
 		t.Errorf("spec.nova = %+v, want instanceName web-1 / project proj", got.Spec.Nova)
@@ -376,6 +378,9 @@ func TestController_Reconcile_clearsFieldsWhenServerGone(t *testing.T) {
 	scheme := newTestScheme(t)
 	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	applyNovaState(vm, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1", InstanceName: "web-1"})
+	// Status.Host is owned by another component; the syncer must leave it intact
+	// even when it clears its own Nova-derived fields.
+	vm.Status.Host = &v1alpha1.HostRef{Name: "compute-1"}
 	c := &Controller{
 		Client:    newTestClient(t, scheme, vm),
 		Scheme:    scheme,
@@ -388,8 +393,12 @@ func TestController_Reconcile_clearsFieldsWhenServerGone(t *testing.T) {
 
 	got := getVM(t, c)
 	// The resource must survive (cleanup controller prunes, not this one).
-	if got.Spec.Nova.InstanceName != "" || got.Status.Host != nil {
-		t.Errorf("expected nova fields cleared, got spec=%+v host=%+v", got.Spec.Nova, got.Status.Host)
+	if got.Spec.Nova.InstanceName != "" {
+		t.Errorf("expected nova spec fields cleared, got spec=%+v", got.Spec.Nova)
+	}
+	// Status.Host must NOT be cleared by the nova syncer.
+	if got.Status.Host == nil || got.Status.Host.Name != "compute-1" {
+		t.Errorf("status.host = %+v, want preserved compute-1 (not owned by syncer)", got.Status.Host)
 	}
 	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedGone)
 }

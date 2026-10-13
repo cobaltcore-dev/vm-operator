@@ -57,8 +57,9 @@ func TestApplyNovaState_populates(t *testing.T) {
 	if vm.Status.Nova == nil || vm.Status.Nova.Status != "ACTIVE" {
 		t.Errorf("status.nova = %+v", vm.Status.Nova)
 	}
-	if vm.Status.Host == nil || vm.Status.Host.Name != "compute-1" {
-		t.Errorf("status.host = %+v", vm.Status.Host)
+	// applyNovaState must not touch Status.Host — that field is owned elsewhere.
+	if vm.Status.Host != nil {
+		t.Errorf("status.host = %+v, want nil (not set by applyNovaState)", vm.Status.Host)
 	}
 }
 
@@ -79,11 +80,16 @@ func TestApplyNovaState_nilServerClears(t *testing.T) {
 	applyNovaState(vm, fullServer())
 	synced := new(metav1.Now())
 	vm.Status.Nova.LastSyncTime = synced
+	// A host set by another component must survive the clear.
+	vm.Status.Host = &v1alpha1.HostRef{Name: "compute-1"}
 
 	applyNovaState(vm, nil)
 
-	if vm.Spec.Nova.InstanceName != "" || vm.Spec.Nova.Flavor.Name != "" || vm.Status.Host != nil {
-		t.Errorf("expected nova fields cleared, got spec=%+v host=%+v", vm.Spec.Nova, vm.Status.Host)
+	if vm.Spec.Nova.InstanceName != "" || vm.Spec.Nova.Flavor.Name != "" {
+		t.Errorf("expected nova spec fields cleared, got spec=%+v", vm.Spec.Nova)
+	}
+	if vm.Status.Host == nil || vm.Status.Host.Name != "compute-1" {
+		t.Errorf("status.host = %+v, want preserved (not owned by applyNovaState)", vm.Status.Host)
 	}
 	if novaFieldsSet(vm) {
 		t.Error("novaFieldsSet should be false after clearing")
