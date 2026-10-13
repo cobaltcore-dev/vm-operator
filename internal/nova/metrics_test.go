@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -96,6 +97,44 @@ vm_operator_nova_api_requests_total{method="fetch_server",outcome="success"} 1
 vm_operator_nova_api_requests_total{method="fetch_servers",outcome="success"} 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "vm_operator_nova_api_requests_total"); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestReconcile_SkippedCreateRecordsNoop guards the metric labelling on the
+// create path: a server that cannot yet yield a resource (here: no availability
+// zone) is skipped, which must be counted as "noop", not "created". A create
+// that never happened must never inflate the created counter.
+func TestReconcile_SkippedCreateRecordsNoop(t *testing.T) {
+	m := NewMetrics()
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(m); err != nil {
+		t.Fatalf("registering metrics: %v", err)
+	}
+
+	scheme := newTestScheme(t)
+	c := &Controller{
+		Client:  newTestClient(t, scheme), // no CRD seeded
+		Scheme:  scheme,
+		Region:  "qa-de-1",
+		Metrics: m,
+		// Managed flavor but no availability zone yet: createFromServer skips.
+		OpenStack: &fakeOpenStackClient{
+			result:  []servers.Server{{ID: testVMUUID, Status: "BUILD", Flavor: map[string]any{"id": "flavor-uuid"}}},
+			flavors: map[string]*flavors.Flavor{"flavor-uuid": qemuFlavor("flavor-uuid", 4, 8192)},
+		},
+	}
+
+	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	want := `
+# HELP vm_operator_nova_reconcile_total Total number of nova VirtualMachine reconciles by outcome.
+# TYPE vm_operator_nova_reconcile_total counter
+vm_operator_nova_reconcile_total{outcome="noop"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "vm_operator_nova_reconcile_total"); err != nil {
 		t.Error(err)
 	}
 }

@@ -184,30 +184,6 @@ func TestUserAgentTransport_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestWrapUserAgent(t *testing.T) {
-	defer func() { userAgent = "vm-operator" }()
-	SetUserAgent("vm-operator", "sha-abc123")
-
-	var captured string
-	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		captured = req.Header.Get("User-Agent")
-		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
-	})
-
-	wrapped := WrapUserAgent(base)
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", http.NoBody)
-	if _, err := wrapped.RoundTrip(req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if captured != "vm-operator/sha-abc123" {
-		t.Errorf("User-Agent = %q, want %q", captured, "vm-operator/sha-abc123")
-	}
-	// The caller's request must not be mutated.
-	if req.Header.Get("User-Agent") != "" {
-		t.Error("WrapUserAgent mutated the caller's request")
-	}
-}
-
 func TestSetUserAgent(t *testing.T) {
 	defer func() { userAgent = "vm-operator" }()
 

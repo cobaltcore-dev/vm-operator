@@ -15,8 +15,9 @@ import (
 
 // userAgent is the User-Agent value set on every outgoing HTTP request made
 // through clients created by this package, identifying the vm-operator as the
-// caller. It defaults to "vm-operator" and can be overridden once at process
-// startup via SetUserAgent (e.g. "vm-operator/sha-70af93a8").
+// caller. It defaults to "vm-operator"; main overrides it once at startup via
+// SetUserAgent, appending the build version when one was stamped in (e.g.
+// "vm-operator/sha-70af93a8").
 var userAgent = "vm-operator"
 
 // SetUserAgent sets the User-Agent that this package's HTTP clients send. The
@@ -50,9 +51,12 @@ type requestLogger struct {
 	T http.RoundTripper
 }
 
-// RoundTrip logs the request URL before making the request.
+// RoundTrip logs the request URL before making the request. It logs at V(1):
+// the poll loop pages through every server each interval and Reconcile issues
+// per-server calls, so this is debug-level detail rather than something we want
+// in the steady-state Info stream.
 func (lrt *requestLogger) RoundTrip(req *http.Request) (*http.Response, error) {
-	logf.FromContext(req.Context()).Info("making http request", "url", req.URL.String())
+	logf.FromContext(req.Context()).V(1).Info("making http request", "url", req.URL.String())
 	return lrt.T.RoundTrip(req)
 }
 
@@ -69,13 +73,6 @@ func (uat *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, err
 	req = req.Clone(req.Context())
 	req.Header.Set("User-Agent", userAgent)
 	return uat.T.RoundTrip(req)
-}
-
-// WrapUserAgent wraps the given RoundTripper so that every request carries the
-// vm-operator User-Agent header. Use it for hand-built transports that neither
-// go through NewHTTPClient nor the shared http.DefaultTransport.
-func WrapUserAgent(rt http.RoundTripper) http.RoundTripper {
-	return &userAgentTransport{T: rt}
 }
 
 // NewTransport returns an *http.Transport configured with TLS client

@@ -107,12 +107,12 @@
           ]
         }
       },
-      "reconcileBacklog": {
+      "lastPollEnqueued": {
         "kind": "Panel",
         "spec": {
           "display": {
-            "name": "Reconcile backlog",
-            "description": "UUIDs the most recent poll enqueued for reconciliation. Should return to zero between polls."
+            "name": "Last poll enqueued",
+            "description": "UUIDs the most recent successful poll enqueued for reconciliation. Zero at steady state; a sustained non-zero value means the fleet never fully converges with Nova."
           },
           "plugin": {
             "kind": "TimeSeriesChart",
@@ -129,7 +129,7 @@
                 "plugin": {
                   "kind": "PrometheusTimeSeriesQuery",
                   "spec": {
-                    "query": "vm_operator_nova_reconcile_backlog{job=~\"vm-operator.*\"}",
+                    "query": "vm_operator_nova_last_poll_enqueued{job=~\"vm-operator.*\"}",
                     "seriesNameFormat": "{{instance}}"
                   }
                 }
@@ -249,7 +249,7 @@
                 "plugin": {
                   "kind": "PrometheusTimeSeriesQuery",
                   "spec": {
-                    "query": "histogram_quantile(0.99, sum by (le) (rate(vm_operator_nova_poll_duration_seconds_bucket{job=~\"vm-operator.*\"}[5m])))",
+                    "query": "histogram_quantile(0.99, sum by (le) (rate(vm_operator_nova_poll_duration_seconds_bucket{result=\"success\",job=~\"vm-operator.*\"}[5m])))",
                     "seriesNameFormat": "p99"
                   }
                 }
@@ -330,7 +330,7 @@
               "width": 12,
               "height": 8,
               "content": {
-                "$ref": "#/spec/panels/reconcileBacklog"
+                "$ref": "#/spec/panels/lastPollEnqueued"
               }
             },
             {

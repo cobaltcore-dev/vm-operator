@@ -34,9 +34,10 @@ import (
 // fetch into a tight loop that hammers Nova.
 const MinInterval = time.Second
 
-// DefaultInterval is used when the controller is configured with a
-// non-positive Interval.
-const DefaultInterval = 300 * time.Second
+// DefaultInterval is the out-of-the-box poll interval: it is both the default
+// value of the --nova-sync-interval flag (see cmd/main.go) and the fallback the
+// poll loop applies when configured with a non-positive Interval.
+const DefaultInterval = 5 * time.Minute
 
 // Controller keeps VirtualMachine resources in sync with the Nova servers they
 // mirror.
@@ -55,6 +56,13 @@ const DefaultInterval = 300 * time.Second
 // Client is typically a cortex multicluster client, so reads and writes may be
 // served by the home cluster or a remote cluster routed by availability zone
 // (see VirtualMachineRouter).
+//
+// The manager needs the following RBAC permissions for this controller and
+// CleanupController; they are templated by hand in dist/templates/rbac.yaml
+// rather than generated:
+//   - cobaltcore.cloud/virtualmachines: get;list;watch;create;update;patch;delete
+//   - cobaltcore.cloud/virtualmachines/status: get;update;patch
+//   - cobaltcore.cloud/virtualmachines/finalizers: update
 type Controller struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -135,11 +143,18 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			outcome = outcomeNoop
 			return ctrl.Result{}, nil
 		}
-		// Nova has it but we don't: create it from Nova's view.
-		outcome = outcomeCreated
-		if createErr := c.createFromServer(ctx, log, req.Name, server); createErr != nil {
+		// Nova has it but we don't: create it from Nova's view. createFromServer
+		// may legitimately skip (returning created=false) for a server that cannot
+		// yet yield a valid resource, which is a noop rather than a create.
+		created, createErr := c.createFromServer(ctx, log, req.Name, server)
+		switch {
+		case createErr != nil:
 			outcome = outcomeError
 			return ctrl.Result{}, createErr
+		case created:
+			outcome = outcomeCreated
+		default:
+			outcome = outcomeNoop
 		}
 		return ctrl.Result{}, nil
 	default:
@@ -177,7 +192,9 @@ func (c *Controller) syncExisting(ctx context.Context, log logr.Logger, vm *v1al
 }
 
 // createFromServer creates a new resource carrying the fields Nova provides,
-// then records the sync outcome on its status.
+// then records the sync outcome on its status. It reports created=true only when
+// a resource was actually created; a skip (see below) or a lost create race
+// returns created=false so the caller records a noop rather than a create.
 //
 // Besides the Nova-derived fields (via applyNovaState), it must populate the
 // VMSpec fields the CRD requires at creation and the placement fields derived
@@ -188,31 +205,36 @@ func (c *Controller) syncExisting(ctx context.Context, log logr.Logger, vm *v1al
 //
 // Creation is skipped (not errored, which would hot-loop) when the server cannot
 // yield a valid resource:
-//   - no availability zone (e.g. not yet scheduled, or shelved), or
+//   - no availability zone (e.g. not yet scheduled, or shelved),
+//   - no flavor id, or
 //   - a flavor whose hypervisor type is not one this operator manages (qemu/ch).
 //
 // The next poll re-enqueues it if its state later changes.
-func (c *Controller) createFromServer(ctx context.Context, log logr.Logger, uuid string, server *servers.Server) error {
+func (c *Controller) createFromServer(ctx context.Context, log logr.Logger, uuid string, server *servers.Server) (bool, error) {
 	az := server.AvailabilityZone
 	if az == "" {
 		log.V(1).Info("skipping create: nova server has no availability zone yet", "name", uuid)
-		return nil
+		return false, nil
 	}
 
 	flavorID := stringField(server.Flavor, "id")
 	if flavorID == "" {
-		return fmt.Errorf("nova server %s has no flavor id", uuid)
+		// A server with no flavor id cannot yield the Resources the CRD requires.
+		// Skip rather than error: erroring would requeue and hot-loop, and the
+		// next poll re-enqueues the server if it later reports a flavor.
+		log.V(1).Info("skipping create: nova server has no flavor id", "name", uuid)
+		return false, nil
 	}
 	flavor, err := c.OpenStack.FetchFlavor(ctx, flavorID)
 	if err != nil {
-		return fmt.Errorf("fetching flavor for VirtualMachine %s: %w", uuid, err)
+		return false, fmt.Errorf("fetching flavor for VirtualMachine %s: %w", uuid, err)
 	}
 
 	hypervisorType, ok := hypervisorTypeFromFlavor(flavor)
 	if !ok {
 		log.V(1).Info("skipping create: nova server flavor is not a managed hypervisor type",
 			"name", uuid, "flavor", flavorID)
-		return nil
+		return false, nil
 	}
 
 	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: uuid}}
@@ -225,9 +247,9 @@ func (c *Controller) createFromServer(ctx context.Context, log logr.Logger, uuid
 
 	if err := c.Create(ctx, vm); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return nil // Raced with another create; the next reconcile syncs it.
+			return false, nil // Raced with another create; the next reconcile syncs it.
 		}
-		return fmt.Errorf("creating VirtualMachine %s: %w", uuid, err)
+		return false, fmt.Errorf("creating VirtualMachine %s: %w", uuid, err)
 	}
 
 	// Create only persists spec + metadata, so record status separately.
@@ -235,10 +257,13 @@ func (c *Controller) createFromServer(ctx context.Context, log logr.Logger, uuid
 		metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate, "resource created from nova state"))
 	stampSyncTime(vm)
 	if err := c.Status().Update(ctx, vm); err != nil {
-		return fmt.Errorf("updating created VirtualMachine %s status: %w", uuid, err)
+		return false, fmt.Errorf("updating created VirtualMachine %s status: %w", uuid, err)
 	}
-	log.V(1).Info("created VirtualMachine from nova", "name", uuid)
-	return nil
+	// Creating a resource from a pre-existing Nova server (adoption) is a
+	// meaningful, low-frequency transition, so log it at Info alongside the
+	// prune in CleanupController; per-sync updates stay at V(1).
+	log.Info("created VirtualMachine from nova", "name", uuid)
+	return true, nil
 }
 
 // resourcesFromFlavor maps a Nova flavor's vCPU and RAM onto the cpu/memory
@@ -289,7 +314,9 @@ func (c *Controller) markSyncFailed(ctx context.Context, key client.ObjectKey, c
 	meta.SetStatusCondition(&vm.Status.Conditions, novaSyncedCondition(
 		metav1.ConditionFalse, v1alpha1.ConditionReasonNovaSyncedError, cause.Error()))
 	if err := c.Status().Patch(ctx, &vm, client.MergeFrom(base)); err != nil {
-		log.V(1).Info("could not record nova sync failure", "name", key.Name, "error", err.Error())
+		// Best-effort: the caller already returns the fetch error for retry, so a
+		// failure to annotate is not fatal — but it is still an error worth seeing.
+		log.Error(err, "could not record nova sync failure on resource", "name", key.Name)
 	}
 }
 

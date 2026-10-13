@@ -111,9 +111,9 @@ spec:
               More than 10% of VirtualMachine reconciles have ended in error
               over the last hour. Affected resources are being retried but
               are not converging to Nova's state; check the manager logs.
-        - alert: NovaReconcileBacklog
+        - alert: NovaReconcileNotConverging
           expr: |
-            vm_operator_nova_reconcile_backlog{job=~"vm-operator.*"} > 0
+            vm_operator_nova_last_poll_enqueued{job=~"vm-operator.*"} > 0
           for: 2h
           labels:
             context: sync
@@ -121,11 +121,13 @@ spec:
             severity: warning
             support_group: compute
           annotations:
-            summary: "Nova reconcile backlog is not draining"
+            summary: "Nova poll keeps finding VirtualMachines out of sync"
             description: >
-              The vm-operator has had VirtualMachines queued for reconciliation
-              for 2 hours without the backlog clearing. In the largest regions a
-              single poll-and-reconcile cycle can take up to an hour, so this
-              only fires once the backlog has survived several cycles. Reconciles
-              may be failing or running slower than polls produce work.
+              Every nova poll for the last 2 hours has enqueued at least one
+              VirtualMachine for reconciliation, i.e. the fleet never reaches a
+              fully in-sync steady state. In the largest regions a single
+              poll-and-reconcile cycle can take up to an hour, so this only fires
+              once the condition has survived several cycles. Reconciles may be
+              failing, or a resource may be stuck differing from Nova on every
+              poll; check the manager logs and the reconcile error rate.
 {{- end }}

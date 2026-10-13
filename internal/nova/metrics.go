@@ -60,7 +60,7 @@ type Metrics struct {
 	pollErrorsTotal    *prometheus.CounterVec
 	servers            prometheus.Gauge
 	managedVMs         prometheus.Gauge
-	reconcileBacklog   prometheus.Gauge
+	lastPollEnqueued   prometheus.Gauge
 	apiRequestsTotal   *prometheus.CounterVec
 	apiRequestDuration *prometheus.HistogramVec
 	pruneTotal         *prometheus.CounterVec
@@ -99,9 +99,9 @@ func NewMetrics() *Metrics {
 			Name: metricPrefix + "managed_vms",
 			Help: "Number of VirtualMachine resources observed by the most recent successful poll.",
 		}),
-		reconcileBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: metricPrefix + "reconcile_backlog",
-			Help: "Number of uuids the most recent poll enqueued for reconciliation.",
+		lastPollEnqueued: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: metricPrefix + "last_poll_enqueued",
+			Help: "Number of uuids the most recent successful poll enqueued for reconciliation.",
 		}),
 		apiRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: metricPrefix + "api_requests_total",
@@ -124,7 +124,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		m.reconcileTotal, m.reconcileDuration,
 		m.pollDuration, m.pollErrorsTotal,
-		m.servers, m.managedVMs, m.reconcileBacklog,
+		m.servers, m.managedVMs, m.lastPollEnqueued,
 		m.apiRequestsTotal, m.apiRequestDuration,
 		m.pruneTotal,
 	}
@@ -171,13 +171,13 @@ func (m *Metrics) recordPollError(stage string) {
 }
 
 // setPollGauges records the fleet-size snapshot from a successful poll.
-func (m *Metrics) setPollGauges(servers, managedVMs, backlog int) {
+func (m *Metrics) setPollGauges(servers, managedVMs, enqueued int) {
 	if m == nil {
 		return
 	}
 	m.servers.Set(float64(servers))
 	m.managedVMs.Set(float64(managedVMs))
-	m.reconcileBacklog.Set(float64(backlog))
+	m.lastPollEnqueued.Set(float64(enqueued))
 }
 
 // observeAPIRequest records the outcome and duration of a single Nova API call.

@@ -59,7 +59,10 @@ func (c *CleanupController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// empty Nova status means "not yet synced", not "server gone", so it is
 	// deliberately left alone.
 	if vm.Status.Nova != nil && vm.Status.Nova.Status == "DELETED" {
-		log.V(1).Info("pruning VirtualMachine: nova reports server deleted", "name", vm.Name)
+		// Pruning deletes the resource — an irreversible action — so log it at
+		// Info (not V(1)) to leave a visible audit trail in normal operation. It
+		// is low-frequency, so this does not add steady-state noise.
+		log.Info("pruning VirtualMachine: nova reports server deleted", "name", vm.Name)
 		if err := client.IgnoreNotFound(c.Delete(ctx, &vm)); err != nil {
 			c.Metrics.recordPrune("error")
 			return ctrl.Result{}, err

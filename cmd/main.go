@@ -31,6 +31,11 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+
+	// version is the build version stamped into the OpenStack User-Agent. It is
+	// left empty by default and set via -ldflags "-X main.version=<sha>" at build
+	// time; when empty the User-Agent is just "vm-operator".
+	version string
 )
 
 func init() {
@@ -65,6 +70,10 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Tag every outgoing OpenStack request so operators can identify this
+	// client in Nova/Keystone access logs.
+	nova.SetUserAgent("vm-operator", version)
 
 	ctx := ctrl.SetupSignalHandler()
 	restConfig := ctrl.GetConfigOrDie()

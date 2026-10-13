@@ -9,9 +9,9 @@ import (
 	"os"
 )
 
-// Load reads the arbitrary configuration from a JSON file.
+// Load reads a JSON configuration file and unmarshals it into C.
 //
-// The config file is expected mounted into the manager pod from a
+// The config file is expected to be mounted into the manager pod from a
 // Kubernetes Secret templated by the Helm chart (see dist/templates/secret.yaml).
 func Load[C any](path string) (C, error) {
 	var cfg C
