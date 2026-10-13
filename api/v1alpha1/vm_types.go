@@ -409,11 +409,12 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="Flavor",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.cpu",name="CPU",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.memory",name="Memory",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.host.name",name="Host",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].status",name="Running",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].reason",name="State",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].status",name="NovaInSync",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.nova.status",name="NovaState",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.host.name",name="NovaHost",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".spec.targetHost.name",name="TargetHost",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].status",name="NovaInSync",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.nova.status",name="NovaState",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.ownership.project",name="Project",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Migrating\")].status",name="Migrating",type="string",priority=1

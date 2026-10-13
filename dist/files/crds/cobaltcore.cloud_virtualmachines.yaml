@@ -32,20 +32,27 @@ spec:
     - jsonPath: .spec.resources.memory
       name: Memory
       type: string
-    - jsonPath: .status.host.name
-      name: Host
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Running")].status
       name: Running
       type: string
     - jsonPath: .status.conditions[?(@.type=="Running")].reason
       name: State
       type: string
+    - jsonPath: .status.host.name
+      name: NovaHost
+      priority: 1
+      type: string
+    - jsonPath: .spec.targetHost.name
+      name: TargetHost
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="NovaInSync")].status
       name: NovaInSync
+      priority: 1
       type: string
     - jsonPath: .status.nova.status
       name: NovaState
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
