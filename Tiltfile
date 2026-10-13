@@ -20,8 +20,47 @@
 # so we only pin the repository name here.
 IMAGE = 'vm-operator'
 
-# Guard against deploying to a shared/prod cluster by accident.
-allow_k8s_contexts(k8s_context())
+# Guard against deploying to a shared/prod cluster by accident. Both `tilt up`
+# and `tilt down` evaluate this Tiltfile, so failing here aborts either one.
+#
+# The current kubectl context must be in the safe list, otherwise we bail out.
+# The defaults cover the common local clusters; extend the list for your own
+# throwaway clusters via TILT_SAFE_CONTEXTS (comma-separated), e.g.
+#   TILT_SAFE_CONTEXTS="my-dev-cluster,another-sandbox" tilt up
+DEFAULT_SAFE_CONTEXTS = [
+    'kind',
+    'kind-kind',
+    'docker-desktop',
+    'minikube',
+    'rancher-desktop',
+    'orbstack',
+    'k3d',
+    'colima',
+]
+
+safe_contexts = list(DEFAULT_SAFE_CONTEXTS)
+for ctx in os.getenv('TILT_SAFE_CONTEXTS', '').split(','):
+    ctx = ctx.strip()
+    if ctx:
+        safe_contexts.append(ctx)
+
+current_context = k8s_context()
+if current_context not in safe_contexts:
+    fail(
+        'Refusing to run against kubectl context "{}": it is not in the safe '
+        'list ({}). This guards against accidentally deploying to a shared or '
+        'production cluster. Switch to a local/throwaway context, or add this '
+        'one via TILT_SAFE_CONTEXTS="{}".'.format(
+            current_context,
+            ', '.join(safe_contexts),
+            current_context,
+        )
+    )
+
+# Tell Tilt the current context is allowed (we have already validated it above),
+# so its own built-in remote-cluster guard does not fire for e.g. k3d/colima
+# contexts added through TILT_SAFE_CONTEXTS.
+allow_k8s_contexts(current_context)
 
 load('ext://helm_resource', 'helm_resource', 'helm_repo')
 
@@ -117,6 +156,23 @@ openstack_set = ['openstack.enabled=false']
 if os_auth_url:
     openstack_set = ['openstack.enabled=true', 'openstack.createSecret=false']
 
+    # Sanity-check the credentials before we hand them to the cluster. If they
+    # are broken, the manager pod would crashloop and hammer Keystone with
+    # failed logins on every restart. Instead we fail fast here, in the shell
+    # that already has the OS_* vars, by asking Keystone for a token.
+    #
+    # `openstack token issue` inherits the OS_* env vars and exits non-zero on
+    # an auth failure. quiet/echo_off keep the token (and the command) out of
+    # the Tilt log. A missing `openstack` CLI also fails here, with a hint.
+    local(
+        'command -v openstack >/dev/null 2>&1 || { ' +
+        'echo "openstack CLI not found; install python-openstackclient to let ' +
+        'Tilt validate OS_* credentials before deploy" >&2; exit 1; }; ' +
+        'openstack token issue -f value -c id >/dev/null',
+        echo_off=True,
+        quiet=True,
+    )
+
     openstack_json = encode_json({
         'url': os_auth_url,
         'availability': os.getenv('OS_INTERFACE', 'public'),
@@ -153,9 +209,6 @@ chart_yaml = helm(
     ] + openstack_set,
 )
 k8s_yaml(chart_yaml)
-
-# Apply the sample VirtualMachine. It depends on the CRD the chart installs.
-k8s_yaml('samples/vm.yaml')
 
 # Group the manager Deployment under a readable resource name in the Tilt UI.
 # It waits on the operator so the ServiceMonitor/PrometheusRule CRDs exist.
