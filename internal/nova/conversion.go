@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
 )
@@ -73,7 +74,12 @@ func ConvertToVirtualMachine(server *servers.Server, flavor *flavors.Flavor, reg
 			AZ:             server.AvailabilityZone,
 			Region:         region,
 			HypervisorType: &hypervisorType,
-			TargetHost:     &v1alpha1.HostRef{Name: server.Host},
+			TargetHost: &v1alpha1.HostRef{
+				// So we avoid the import of the Hypervisor operator:
+				APIVersion: schema.GroupVersion{Group: "kvm.cloud.sap", Version: "v1"}.String(),
+				Kind:       "Hypervisor",
+				Name:       server.Host,
+			},
 			Resources: map[v1alpha1.ResourceName]resource.Quantity{
 				v1alpha1.ResourceCPU: *resource.NewQuantity(int64(flavor.VCPUs), resource.DecimalSI),
 				// RAM is reported in MB; ResourceMemory is bytes.
