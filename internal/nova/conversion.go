@@ -69,7 +69,14 @@ func ConvertToVirtualMachine(server *servers.Server, flavor *flavors.Flavor, reg
 
 	return ConvertedVirtualMachine{v1alpha1.VirtualMachine{
 		// The CRD is named after the Nova server uuid.
-		ObjectMeta: metav1.ObjectMeta{Name: server.ID},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: server.ID,
+			Labels: map[string]string{
+				v1alpha1.LabelRegion:     region,
+				v1alpha1.LabelAZ:         server.AvailabilityZone,
+				v1alpha1.LabelTargetHost: server.Host,
+			},
+		},
 		Spec: v1alpha1.VMSpec{
 			AZ:             server.AvailabilityZone,
 			Region:         region,
