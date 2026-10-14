@@ -137,13 +137,15 @@ const (
 	ConditionReasonTerminatingConfirmed = "Confirmed"
 )
 
-// Reasons for ConditionTypeScheduled.
+// Reasons for ConditionTypeScheduled. Note that these are only the explicitly
+// listed reasons, and other reasons may be provided by the condition writer.
 const (
 	// Operation type reasons — set on both success and failure of a scheduling call.
 	ConditionReasonScheduledInitialPlacement = "InitialPlacement"
 	ConditionReasonScheduledLiveMigration    = "LiveMigration"
 	ConditionReasonScheduledEvacuation       = "Evacuation"
 	ConditionReasonScheduledResize           = "Resize"
+	ConditionReasonScheduledRebuild          = "Rebuild"
 
 	// Failure reasons — set on status=False.
 	ConditionReasonScheduledNoHostFound = "NoHostFound"
