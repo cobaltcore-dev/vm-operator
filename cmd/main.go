@@ -20,12 +20,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/cobaltcore-dev/cortex/pkg/multicluster"
+	mcl "github.com/cobaltcore-dev/cortex/pkg/multicluster"
 
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
-	"github.com/cobaltcore-dev/vm-operator/internal"
 	"github.com/cobaltcore-dev/vm-operator/internal/config"
 	"github.com/cobaltcore-dev/vm-operator/internal/nova"
+	vmopmcl "github.com/cobaltcore-dev/vm-operator/pkg/multicluster"
 )
 
 var (
@@ -110,17 +110,17 @@ func main() {
 		Version: v1alpha1.GroupVersion.Version,
 		Kind:    "VirtualMachine",
 	}
-	multiclusterMonitor := multicluster.NewMonitor("vm_operator_")
-	multiclusterClient := &multicluster.Client{
+	multiclusterMonitor := mcl.NewMonitor("vm_operator_")
+	multiclusterClient := &mcl.Client{
 		HomeCluster:    homeCluster,
 		HomeRestConfig: restConfig,
 		HomeScheme:     scheme,
 		Monitor:        multiclusterMonitor,
-		ResourceRouters: map[schema.GroupVersionKind]multicluster.ResourceRouter{
-			vmGVK: internal.VirtualMachineRouter{},
+		ResourceRouters: map[schema.GroupVersionKind]mcl.ResourceRouter{
+			vmGVK: vmopmcl.VirtualMachineRouter{},
 		},
 	}
-	multiclusterConfig, err := config.Load[multicluster.ClientConfig](multiclusterConfigPath)
+	multiclusterConfig, err := config.Load[mcl.ClientConfig](multiclusterConfigPath)
 	if err != nil {
 		setupLog.Error(err, "unable to load multicluster config", "path", multiclusterConfigPath)
 		os.Exit(1)
