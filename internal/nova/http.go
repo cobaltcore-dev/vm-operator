@@ -9,9 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// DefaultHTTPTimeout bounds every HTTP request made to OpenStack when no timeout
+// is configured. It covers the whole request including reading the response
+// body; this is safe for our calls because each paginated page is decoded fully
+// before the next request is issued (see fetchServerPage in client.go).
+const DefaultHTTPTimeout = 30 * time.Second
 
 // userAgent is the User-Agent value set on every outgoing HTTP request made
 // through clients created by this package, identifying the vm-operator as the
@@ -44,6 +51,10 @@ type HTTPClientConfig struct {
 
 	// If the certificate is self-signed, we need to skip verification.
 	SelfSigned bool `json:"selfSigned,omitempty"`
+
+	// TimeoutSeconds bounds every HTTP request to OpenStack. A non-positive value
+	// (including the zero value) falls back to DefaultHTTPTimeout.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 }
 
 // requestLogger is an http.RoundTripper that logs each request.
@@ -113,7 +124,9 @@ func NewTransport(conf HTTPClientConfig) (*http.Transport, error) {
 }
 
 // NewHTTPClient creates a new HTTP client with the given CA cert configuration
-// and logging for each request.
+// and logging for each request. The client is given a request timeout
+// (conf.TimeoutSeconds, or DefaultHTTPTimeout when non-positive) so a hung
+// OpenStack connection cannot block a reconcile or poll indefinitely.
 func NewHTTPClient(ctx context.Context, conf HTTPClientConfig) (*http.Client, error) {
 	transport, err := NewTransport(conf)
 	if err != nil {
@@ -122,5 +135,13 @@ func NewHTTPClient(ctx context.Context, conf HTTPClientConfig) (*http.Client, er
 	if conf.Cert == "" {
 		logf.FromContext(ctx).V(1).Info("making http requests without custom trusted cert bundle")
 	}
-	return &http.Client{Transport: &userAgentTransport{T: &requestLogger{T: transport}}}, nil
+	timeout := DefaultHTTPTimeout
+	if conf.TimeoutSeconds > 0 {
+		timeout = time.Duration(conf.TimeoutSeconds) * time.Second
+	}
+	logf.FromContext(ctx).V(1).Info("configured openstack http client timeout", "timeout", timeout)
+	return &http.Client{
+		Transport: &userAgentTransport{T: &requestLogger{T: transport}},
+		Timeout:   timeout,
+	}, nil
 }

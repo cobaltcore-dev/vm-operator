@@ -419,6 +419,65 @@ func TestController_Reconcile_skipsCreateForUnmanagedHypervisor(t *testing.T) {
 	}
 }
 
+func TestController_Reconcile_returnsFlavorFetchError(t *testing.T) {
+	// The poll loop already filtered this server in using its bulk flavor listing,
+	// so a per-server flavor fetch failure is unexpected: Reconcile must return the
+	// error (requeue) rather than silently skipping the server as "no managed flavor".
+	scheme := newTestScheme(t)
+	c := &Controller{
+		Client: newTestClient(t, scheme), // no CRD seeded
+		Scheme: scheme,
+		Region: "qa-de-1",
+		OpenStack: &fakeOpenStackClient{
+			result: []servers.Server{{
+				ID:               testVMUUID,
+				Status:           "ACTIVE",
+				AvailabilityZone: "qa-de-1a",
+				Flavor:           map[string]any{"id": "flavor-uuid"},
+			}},
+			flavorErr: errors.New("flavor service unreachable"),
+		},
+	}
+
+	if _, err := c.Reconcile(context.Background(), request()); err == nil {
+		t.Fatal("expected Reconcile to return the flavor fetch error for retry")
+	}
+
+	var vm v1alpha1.VirtualMachine
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testVMUUID}, &vm); !apierrors.IsNotFound(err) {
+		t.Errorf("expected no VM to be created when the flavor fetch fails, got err=%v", err)
+	}
+}
+
+func TestController_Reconcile_skipsCreateWithoutFlavorID(t *testing.T) {
+	// A server with no flavor id cannot be resolved to a managed flavor, so it is
+	// skipped as unmanaged (a noop, not an error) — distinct from a flavor fetch
+	// that fails.
+	scheme := newTestScheme(t)
+	c := &Controller{
+		Client: newTestClient(t, scheme), // no CRD seeded
+		Scheme: scheme,
+		Region: "qa-de-1",
+		OpenStack: &fakeOpenStackClient{
+			result: []servers.Server{{
+				ID:               testVMUUID,
+				Status:           "ACTIVE",
+				AvailabilityZone: "qa-de-1a",
+				Flavor:           map[string]any{}, // no id
+			}},
+		},
+	}
+
+	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile should not error when the flavor id is absent, got: %v", err)
+	}
+
+	var vm v1alpha1.VirtualMachine
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testVMUUID}, &vm); !apierrors.IsNotFound(err) {
+		t.Errorf("expected no VM to be created without a flavor id, got err=%v", err)
+	}
+}
+
 func TestController_Reconcile_clearsFieldsWhenServerGone(t *testing.T) {
 	const name = testVMUUID
 

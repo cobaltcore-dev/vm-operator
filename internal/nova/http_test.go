@@ -102,6 +102,28 @@ func TestNewHTTPClient_noCert(t *testing.T) {
 	}
 }
 
+func TestNewHTTPClient_setsTimeout(t *testing.T) {
+	t.Run("defaults when unset", func(t *testing.T) {
+		client, err := NewHTTPClient(context.Background(), HTTPClientConfig{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if client.Timeout != DefaultHTTPTimeout {
+			t.Errorf("Timeout = %v, want default %v", client.Timeout, DefaultHTTPTimeout)
+		}
+	})
+
+	t.Run("honors configured value", func(t *testing.T) {
+		client, err := NewHTTPClient(context.Background(), HTTPClientConfig{TimeoutSeconds: 7})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := 7 * time.Second; client.Timeout != want {
+			t.Errorf("Timeout = %v, want %v", client.Timeout, want)
+		}
+	})
+}
+
 func TestNewHTTPClient_propagatesTransportError(t *testing.T) {
 	// A cert without a key makes NewTransport fail; NewHTTPClient must surface
 	// that rather than returning a half-built client.

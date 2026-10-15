@@ -119,6 +119,8 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, fmt.Errorf("getting VirtualMachine %s: %w", req.Name, getErr)
 	}
 
+	log.V(1).Info("reconciling nova server", "name", req.Name, "inNova", inNova, "inK8s", inK8s)
+
 	// Case: neither side has it — nothing to do.
 	if !inK8s && !inNova {
 		c.Metrics.observeReconcile(outcomeNoop, start)
@@ -126,26 +128,33 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	// Convert a server in Nova to the VirtualMachine it maps onto. Every server
-	// must have a findable, managed flavor; if the id is absent, the flavor cannot
-	// be fetched, or its hypervisor type is unmanaged, the server is skipped (a
-	// noop, not an error — the next poll re-enqueues if its state changes). A gone
-	// server needs no conversion.
+	// must have a findable, managed flavor; if the id is absent or its hypervisor
+	// type is unmanaged, the server is skipped (a noop, not an error — the next poll
+	// re-enqueues if its state changes). A failed flavor fetch, by contrast, is
+	// returned for retry (see below). A gone server needs no conversion.
 	var conv ConvertedVirtualMachine
 	if inNova {
-		// Resolve the flavor by its id (a missing id or a failed fetch leaves it nil,
-		// which convert rejects as unmanaged). An unmanaged hypervisor type is an
-		// expected skip (noop, not an error — the next poll re-enqueues it); any other
-		// conversion error is unexpected and propagated for retry.
+		// Resolve the flavor by its id. An absent id leaves the flavor nil, which
+		// convert rejects as unmanaged (an expected skip). A present id that fails to
+		// fetch is NOT swallowed: the poll loop already filtered this server in using
+		// its bulk flavor listing, so a per-server fetch failure here is unexpected and
+		// is propagated for retry rather than silently dropped as "no managed flavor".
 		var flavor *flavors.Flavor
 		if id, _ := server.Flavor["id"].(string); id != "" {
-			if f, ferr := c.OpenStack.FetchFlavor(ctx, id); ferr == nil {
-				flavor = f
+			f, ferr := c.OpenStack.FetchFlavor(ctx, id)
+			if ferr != nil {
+				c.Metrics.observeReconcile(outcomeError, start)
+				return ctrl.Result{}, fmt.Errorf("fetching flavor %s for nova server %s: %w", id, req.Name, ferr)
 			}
+			flavor = f
+		} else {
+			log.V(1).Info("nova server has no flavor id", "name", req.Name)
 		}
 		converted, convErr := ConvertToVirtualMachine(server, flavor, c.Region)
 		switch {
 		case errors.Is(convErr, ErrUnmanagedHypervisorType):
-			log.V(1).Info("skipping: nova server has no managed flavor", "name", req.Name)
+			flavorID, _ := server.Flavor["id"].(string)
+			log.V(1).Info("skipping: nova server has no managed flavor", "name", req.Name, "flavorID", flavorID)
 			c.Metrics.observeReconcile(outcomeNoop, start)
 			return ctrl.Result{}, nil
 		case convErr != nil:
