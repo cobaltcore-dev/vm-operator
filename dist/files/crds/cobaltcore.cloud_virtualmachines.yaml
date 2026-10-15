@@ -32,20 +32,27 @@ spec:
     - jsonPath: .spec.resources.memory
       name: Memory
       type: string
-    - jsonPath: .status.host.name
-      name: Host
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Running")].status
       name: Running
       type: string
     - jsonPath: .status.conditions[?(@.type=="Running")].reason
       name: State
       type: string
-    - jsonPath: .status.conditions[?(@.type=="NovaInSync")].status
-      name: NovaInSync
+    - jsonPath: .status.nova.host
+      name: NovaHost
+      priority: 1
+      type: string
+    - jsonPath: .spec.targetHost.name
+      name: TargetHost
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="NovaSynced")].status
+      name: NovaSynced
+      priority: 1
       type: string
     - jsonPath: .status.nova.status
       name: NovaState
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -54,24 +61,12 @@ spec:
       name: Project
       priority: 1
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Migrating")].status
-      name: Migrating
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Resizing")].status
-      name: Resizing
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Scheduled")].reason
-      name: Scheduled
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="NovaInSync")].reason
-      name: NovaInSyncReason
-      priority: 1
-      type: string
     - jsonPath: .status.nova.lastSyncTime
       name: NovaLastSync
+      priority: 1
+      type: date
+    - jsonPath: .status.deletionTime
+      name: DeletionTime
       priority: 1
       type: date
     name: v1alpha1
@@ -100,11 +95,16 @@ spec:
           spec:
             description: |-
               VMSpec defines the desired state of a VirtualMachine.
-              Written by the Cortex placement API at scheduling time and updated on lifecycle events.
+              Region, AZ, and Resources are populated at creation time either by the Cortex
+              placement API (at scheduling time) or by the vm-operator's Nova sync
+              controller (when it adopts a pre-existing Nova server that has no CRD yet).
+              Both write the same create-time values; the fields are immutable thereafter.
             properties:
               az:
-                description: AZ is the Nova availability zone the VM was scheduled
-                  into.
+                description: |-
+                  AZ is the Nova availability zone the VM was scheduled into.
+                  Set once at creation by the Cortex placement API or the vm-operator's
+                  Nova sync controller; immutable afterwards.
                 type: string
                 x-kubernetes-validations:
                 - message: az is immutable
@@ -302,7 +302,10 @@ spec:
                 - ownership
                 type: object
               region:
-                description: Region is the cloud region this VM is placed in.
+                description: |-
+                  Region is the cloud region this VM is placed in.
+                  Set once at creation by the Cortex placement API or the vm-operator's
+                  Nova sync controller; immutable afterwards.
                 type: string
                 x-kubernetes-validations:
                 - message: region is immutable
@@ -317,6 +320,8 @@ spec:
                 description: |-
                   Resources describes the compute resources requested by the VM.
                   Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
+                  Set at creation by the Cortex placement API or the vm-operator's Nova sync
+                  controller (which derives them from the Nova flavor).
                 type: object
                 x-kubernetes-validations:
                 - message: both cpu and memory must be specified
@@ -435,6 +440,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              deletionTime:
+                description: |-
+                  DeletionTime is the time at which the cleanup controller will prune this
+                  VirtualMachine. It is set when Nova reports the server as DELETED, giving
+                  a grace window before the resource is actually removed. Absent when no
+                  deletion is scheduled; cleared if Nova reports the server live again
+                  before the window elapses.
+                format: date-time
+                type: string
               host:
                 description: Host is a reference to the host this VM is currently
                   running on.
@@ -495,6 +509,11 @@ spec:
                 description: Nova holds the last known state of this VM as reported
                   by Nova.
                 properties:
+                  host:
+                    description: |-
+                      Host is the compute host Nova reports the instance on. Distinct from
+                      Status.Host, which is the actual runtime host derived elsewhere.
+                    type: string
                   lastSyncTime:
                     description: LastSyncTime is the timestamp of the last successful
                       sync from Nova.

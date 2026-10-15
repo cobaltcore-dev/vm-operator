@@ -66,6 +66,13 @@ const (
 	// status=Unknown: not yet checked.
 	ConditionTypeNovaInSync VMConditionType = "NovaInSync"
 
+	// ConditionTypeNovaSynced is set by the Nova sync controller to record the
+	// outcome of reflecting Nova's view of the server onto this resource.
+	// status=True: the resource reflects the latest successful Nova fetch.
+	// status=False: the most recent sync failed — see reason and message.
+	// status=Unknown: not yet synced.
+	ConditionTypeNovaSynced VMConditionType = "NovaSynced"
+
 	// ConditionTypeTerminating is set by the VM operator when deletion is detected on either side.
 	// Absent when the VM is not being deleted.
 	// status=False: deletion observed on one side only — possible false positive or waiting for the other side to catch up.
@@ -106,6 +113,20 @@ const (
 	ConditionReasonNovaInSyncUnreachable   = "NovaUnreachable"
 )
 
+// Reasons for ConditionTypeNovaSynced.
+const (
+	// ConditionReasonNovaSyncedUpToDate is set when the resource was
+	// successfully reconciled against Nova's current view of the server,
+	// including when Nova reports the server as gone.
+	ConditionReasonNovaSyncedUpToDate = "UpToDate"
+	// ConditionReasonNovaSyncedGone is set when Nova no longer knows the server
+	// and the Nova-derived fields have been cleared from the resource.
+	ConditionReasonNovaSyncedGone = "ServerGone"
+	// ConditionReasonNovaSyncedError is set when the sync failed, e.g. Nova was
+	// unreachable.
+	ConditionReasonNovaSyncedError = "SyncError"
+)
+
 // Reasons for ConditionTypeTerminating.
 const (
 	// ConditionReasonTerminatingLibvirtGone is set when libvirt no longer observes the VM but Nova still reports it as running.
@@ -116,13 +137,15 @@ const (
 	ConditionReasonTerminatingConfirmed = "Confirmed"
 )
 
-// Reasons for ConditionTypeScheduled.
+// Reasons for ConditionTypeScheduled. Note that these are only the explicitly
+// listed reasons, and other reasons may be provided by the condition writer.
 const (
 	// Operation type reasons — set on both success and failure of a scheduling call.
 	ConditionReasonScheduledInitialPlacement = "InitialPlacement"
 	ConditionReasonScheduledLiveMigration    = "LiveMigration"
 	ConditionReasonScheduledEvacuation       = "Evacuation"
 	ConditionReasonScheduledResize           = "Resize"
+	ConditionReasonScheduledRebuild          = "Rebuild"
 
 	// Failure reasons — set on status=False.
 	ConditionReasonScheduledNoHostFound = "NoHostFound"
@@ -146,14 +169,21 @@ const (
 )
 
 // VMSpec defines the desired state of a VirtualMachine.
-// Written by the Cortex placement API at scheduling time and updated on lifecycle events.
+// Region, AZ, and Resources are populated at creation time either by the Cortex
+// placement API (at scheduling time) or by the vm-operator's Nova sync
+// controller (when it adopts a pre-existing Nova server that has no CRD yet).
+// Both write the same create-time values; the fields are immutable thereafter.
 type VMSpec struct {
 	// Region is the cloud region this VM is placed in.
+	// Set once at creation by the Cortex placement API or the vm-operator's
+	// Nova sync controller; immutable afterwards.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
 	Region string `json:"region"`
 
 	// AZ is the Nova availability zone the VM was scheduled into.
+	// Set once at creation by the Cortex placement API or the vm-operator's
+	// Nova sync controller; immutable afterwards.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="az is immutable"
 	AZ string `json:"az"`
@@ -168,6 +198,8 @@ type VMSpec struct {
 
 	// Resources describes the compute resources requested by the VM.
 	// Keys are ResourceName constants (cpu, memory); values are Kubernetes resource quantities.
+	// Set at creation by the Cortex placement API or the vm-operator's Nova sync
+	// controller (which derives them from the Nova flavor).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="\"cpu\" in self && \"memory\" in self",message="both cpu and memory must be specified"
 	Resources map[ResourceName]resource.Quantity `json:"resources"`
@@ -334,6 +366,14 @@ type VMStatus struct {
 	// +kubebuilder:validation:Optional
 	Nova *NovaStatus `json:"nova,omitempty"`
 
+	// DeletionTime is the time at which the cleanup controller will prune this
+	// VirtualMachine. It is set when Nova reports the server as DELETED, giving
+	// a grace window before the resource is actually removed. Absent when no
+	// deletion is scheduled; cleared if Nova reports the server live again
+	// before the window elapses.
+	// +kubebuilder:validation:Optional
+	DeletionTime *metav1.Time `json:"deletionTime,omitempty"`
+
 	// Libvirt holds state reported by libvirt for this VM.
 	// +kubebuilder:validation:Optional
 	Libvirt *LibvirtStatus `json:"libvirt,omitempty"`
@@ -350,6 +390,11 @@ type NovaStatus struct {
 	// Status is the Nova instance status (e.g. ACTIVE, SHUTOFF, MIGRATING, ERROR, BUILD).
 	// +kubebuilder:validation:Optional
 	Status string `json:"status,omitempty"`
+
+	// Host is the compute host Nova reports the instance on. Distinct from
+	// Status.Host, which is the actual runtime host derived elsewhere.
+	// +kubebuilder:validation:Optional
+	Host string `json:"host,omitempty"`
 
 	// LastSyncTime is the timestamp of the last successful sync from Nova.
 	// +kubebuilder:validation:Optional
@@ -379,18 +424,16 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="Flavor",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.cpu",name="CPU",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.memory",name="Memory",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.host.name",name="Host",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].status",name="Running",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].reason",name="State",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].status",name="NovaInSync",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.nova.status",name="NovaState",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.nova.host",name="NovaHost",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".spec.targetHost.name",name="TargetHost",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaSynced\")].status",name="NovaSynced",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.nova.status",name="NovaState",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.ownership.project",name="Project",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Migrating\")].status",name="Migrating",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Resizing\")].status",name="Resizing",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Scheduled\")].reason",name="Scheduled",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaInSync\")].reason",name="NovaInSyncReason",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.nova.lastSyncTime",name="NovaLastSync",type="date",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.deletionTime",name="DeletionTime",type="date",priority=1
 
 // VirtualMachine tracks a Nova VM from initial placement through its full lifetime.
 type VirtualMachine struct {

@@ -40,4 +40,94 @@ spec:
               endpoint is unreachable). Reconciliation of VirtualMachine
               resources is likely stalled. Investigate the manager Deployment
               and its leader election.
+        - alert: NovaPollStalled
+          expr: |
+            rate(vm_operator_nova_poll_duration_seconds_count{result="success",job=~"vm-operator.*"}[2h]) == 0
+          for: 1h
+          labels:
+            context: sync
+            service: vm-operator
+            severity: warning
+            support_group: compute
+          annotations:
+            summary: "Nova poll loop has stalled"
+            description: >
+              The vm-operator has not completed a successful Nova poll in the
+              last 2 hours, so its view of the Nova fleet is going stale and
+              VirtualMachine resources may no longer reflect reality. A single
+              poll lists every server in the region and can legitimately take up
+              to an hour in the largest regions, so this only fires once well
+              beyond a normal cycle. Check the manager logs and Nova/Keystone
+              reachability.
+        - alert: NovaPollErrors
+          expr: |
+            rate(vm_operator_nova_poll_errors_total{job=~"vm-operator.*"}[1h]) > 0
+          for: 1h
+          labels:
+            context: sync
+            service: vm-operator
+            severity: warning
+            support_group: compute
+          annotations:
+            summary: "Nova poll loop is failing"
+            description: >
+              The vm-operator Nova poll loop has been failing continuously for
+              an hour (listing servers from Nova or VirtualMachines from the
+              apiserver). The reconcile set cannot be computed, so changes in
+              Nova are not being picked up.
+        - alert: NovaAPIErrors
+          expr: |
+            sum(rate(vm_operator_nova_api_requests_total{outcome="error",job=~"vm-operator.*"}[1h]))
+              /
+            sum(rate(vm_operator_nova_api_requests_total{job=~"vm-operator.*"}[1h]))
+              > 0.1
+          for: 30m
+          labels:
+            context: openstack
+            service: vm-operator
+            severity: warning
+            support_group: compute
+          annotations:
+            summary: "Elevated Nova API error rate"
+            description: >
+              More than 10% of the vm-operator's Nova API requests have failed
+              over the last hour. This usually points at Nova/Keystone
+              availability or credential/endpoint misconfiguration.
+        - alert: NovaReconcileErrors
+          expr: |
+            sum(rate(vm_operator_nova_reconcile_total{outcome="error",job=~"vm-operator.*"}[1h]))
+              /
+            sum(rate(vm_operator_nova_reconcile_total{job=~"vm-operator.*"}[1h]))
+              > 0.1
+          for: 30m
+          labels:
+            context: sync
+            service: vm-operator
+            severity: warning
+            support_group: compute
+          annotations:
+            summary: "Elevated VirtualMachine reconcile error rate"
+            description: >
+              More than 10% of VirtualMachine reconciles have ended in error
+              over the last hour. Affected resources are being retried but
+              are not converging to Nova's state; check the manager logs.
+        - alert: NovaReconcileNotConverging
+          expr: |
+            vm_operator_nova_last_poll_enqueued{job=~"vm-operator.*"} > 0
+          for: 2h
+          labels:
+            context: sync
+            service: vm-operator
+            severity: warning
+            support_group: compute
+          annotations:
+            summary: "Nova poll keeps finding VirtualMachines out of sync"
+            description: >
+              Every nova poll for the last 2 hours has enqueued at least one
+              VirtualMachine for reconciliation, i.e. the fleet never reaches a
+              fully in-sync steady state. In the largest regions a single
+              poll-and-reconcile cycle can take up to an hour, so this only fires
+              once the condition has survived several cycles. Reconciles may be
+              failing, or a resource may be stuck differing from Nova on every
+              poll; check the manager logs and the reconcile error rate.
 {{- end }}

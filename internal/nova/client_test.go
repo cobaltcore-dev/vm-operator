@@ -1,0 +1,231 @@
+// Copyright SAP SE
+// SPDX-License-Identifier: Apache-2.0
+
+package nova
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gophercloud/gophercloud/v2"
+)
+
+func TestOpenStackClientConfig_authOptions(t *testing.T) {
+	cfg := OpenStackClientConfig{
+		URL:                 "https://keystone.example.com/v3",
+		OSUsername:          "tech-user",
+		OSPassword:          "secret",
+		OSUserDomainName:    "Default",
+		OSProjectName:       "service",
+		OSProjectDomainName: "ServiceDomain",
+	}
+
+	got := cfg.authOptions()
+
+	if got.IdentityEndpoint != cfg.URL {
+		t.Errorf("IdentityEndpoint = %q, want %q", got.IdentityEndpoint, cfg.URL)
+	}
+	if got.Username != cfg.OSUsername || got.Password != cfg.OSPassword {
+		t.Errorf("credentials not mapped: %+v", got)
+	}
+	if got.DomainName != cfg.OSUserDomainName {
+		t.Errorf("DomainName = %q, want %q", got.DomainName, cfg.OSUserDomainName)
+	}
+	if !got.AllowReauth {
+		t.Error("AllowReauth should be true for a long-running client")
+	}
+	if got.Scope == nil {
+		t.Fatal("expected a project scope")
+	}
+	if got.Scope.ProjectName != cfg.OSProjectName || got.Scope.DomainName != cfg.OSProjectDomainName {
+		t.Errorf("scope = %+v, want project %q domain %q", got.Scope, cfg.OSProjectName, cfg.OSProjectDomainName)
+	}
+}
+
+// newTestOpenStackClient returns an openStackClient whose ServiceClient points at srv,
+// carrying the given auth token and microversion. srv.URL is suffixed with "/"
+// to mirror the trailing slash gophercloud guarantees on real endpoints.
+func newTestOpenStackClient(srv *httptest.Server, token, microversion string) *openStackClient {
+	provider := &gophercloud.ProviderClient{TokenID: token}
+	compute := &gophercloud.ServiceClient{
+		ProviderClient: provider,
+		Endpoint:       srv.URL + "/",
+		Microversion:   microversion,
+	}
+	return &openStackClient{compute: compute}
+}
+
+// writeJSON writes body as the response, failing the test on a write error so
+// errcheck (check-blank) stays satisfied without silently dropping the error.
+func writeJSON(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Errorf("writing response: %v", err)
+	}
+}
+
+func TestFetchServers_singlePage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The listing must be scoped to every project.
+		if got := r.URL.Query().Get("all_tenants"); got != "true" {
+			t.Errorf("all_tenants = %q, want \"true\"", got)
+		}
+		writeJSON(t, w, `{"servers":[{"id":"a","status":"ACTIVE"},{"id":"b","status":"SHUTOFF"}]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	got, err := client.FetchServers(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d servers, want 2", len(got))
+	}
+	if got[0].ID != "a" || got[0].Status != "ACTIVE" {
+		t.Errorf("server[0] = %+v, want id=a status=ACTIVE", got[0])
+	}
+	if got[1].ID != "b" || got[1].Status != "SHUTOFF" {
+		t.Errorf("server[1] = %+v, want id=b status=SHUTOFF", got[1])
+	}
+}
+
+func TestFetchServers_followsPagination(t *testing.T) {
+	var nextURL string // set once the server is up, so we can hand out an absolute "next" link.
+	var pages int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		switch r.URL.Query().Get("marker") {
+		case "":
+			// First page points at itself with a marker for the second page.
+			writeJSON(t, w, `{"servers":[{"id":"a"}],"servers_links":[{"rel":"next","href":"`+nextURL+`?marker=a"}]}`)
+		case "a":
+			// Second (and last) page: no next link.
+			writeJSON(t, w, `{"servers":[{"id":"b"}]}`)
+		default:
+			t.Errorf("unexpected marker %q", r.URL.Query().Get("marker"))
+		}
+	}))
+	defer srv.Close()
+	nextURL = srv.URL + "/servers/detail"
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	got, err := client.FetchServers(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pages != 2 {
+		t.Errorf("fetched %d pages, want 2", pages)
+	}
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
+		t.Fatalf("got %+v, want servers a then b", got)
+	}
+}
+
+func TestFetchServers_dropsDuplicates(t *testing.T) {
+	var nextURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("marker") {
+		case "":
+			// "a" appears on both pages (e.g. the set shifted mid-walk).
+			writeJSON(t, w, `{"servers":[{"id":"a"},{"id":"b"}],"servers_links":[{"rel":"next","href":"`+nextURL+`?marker=b"}]}`)
+		default:
+			writeJSON(t, w, `{"servers":[{"id":"a"},{"id":"c"}]}`)
+		}
+	}))
+	defer srv.Close()
+	nextURL = srv.URL + "/servers/detail"
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	got, err := client.FetchServers(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ids := make([]string, len(got))
+	for i, s := range got {
+		ids[i] = s.ID
+	}
+	// "a" is kept once, in the order first seen.
+	if strings.Join(ids, ",") != "a,b,c" {
+		t.Errorf("ids = %v, want [a b c]", ids)
+	}
+}
+
+func TestFetchServers_sendsAuthAndMicroversionHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Auth-Token"); got != "secret-token" {
+			t.Errorf("X-Auth-Token = %q, want \"secret-token\"", got)
+		}
+		if got := r.Header.Get("X-OpenStack-Nova-API-Version"); got != "2.66" {
+			t.Errorf("microversion header = %q, want \"2.66\"", got)
+		}
+		writeJSON(t, w, `{"servers":[]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "secret-token", "2.66")
+	if _, err := client.FetchServers(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFetchServers_omitsMicroversionHeaderWhenUnset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Header["X-Openstack-Nova-Api-Version"]; ok {
+			t.Error("microversion header should be absent when no microversion is configured")
+		}
+		writeJSON(t, w, `{"servers":[]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	if _, err := client.FetchServers(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFetchServers_errorOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	_, err := client.FetchServers(context.Background())
+	if err == nil {
+		t.Fatal("expected an error for a non-200 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %q, want it to mention the status code", err)
+	}
+}
+
+func TestFetchServers_errorOnMalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, `{"servers": not json`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	if _, err := client.FetchServers(context.Background()); err == nil {
+		t.Fatal("expected an error for a malformed response body")
+	}
+}
+
+func TestFetchServers_contextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, `{"servers":[]}`)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	if _, err := client.FetchServers(ctx); err == nil {
+		t.Fatal("expected an error when the context is already cancelled")
+	}
+}

@@ -80,6 +80,7 @@ multicluster:
       home:
         gvks:
           - cobaltcore.cloud/v1alpha1/VirtualMachine
+          - cobaltcore.cloud/v1alpha1/VirtualMachineList
       # Resources managed in remote clusters. Each remote apiserver must accept
       # the manager ServiceAccount's tokens (see structured auth). VirtualMachine
       # writes are routed to the remote whose labels.availabilityZone matches the
@@ -93,6 +94,58 @@ multicluster:
       #     insecureSkipTLSVerify: false
       #     gvks:
       #       - cobaltcore.cloud/v1alpha1/VirtualMachine
+      #       - cobaltcore.cloud/v1alpha1/VirtualMachineList
       #     labels:
       #       availabilityZone: qa-de-1a
       remotes: []
+
+# [Nova]: tuning for the Nova sync controller. The controller only runs when
+# `openstack.enabled` is true (see below); these knobs are non-secret and are
+# passed to the manager as CLI flags rather than through the credentials Secret.
+nova:
+  # How often the sync controller polls Nova for changed servers. A non-positive
+  # value falls back to the manager's built-in default (300s), and values below
+  # one second are clamped. Rendered as the --nova-sync-interval flag.
+  syncInterval: 300s
+  # How long a VirtualMachine carrying no Nova status may exist (measured from
+  # creation) before the garbage collector prunes it as an orphan. A fresh or
+  # slow-to-sync resource is granted this full window before it becomes
+  # eligible. Rendered as the --nova-orphan-ttl flag.
+  orphanTTL: 1h
+  # Grace window between the garbage collector marking a VM for deletion (Nova
+  # reported the server DELETED) and actually deleting it. If Nova reports the
+  # server live again within this window, the deletion is cancelled. Rendered as
+  # the --nova-deletion-ttl flag.
+  deletionTTL: 1h
+
+# [OpenStack]: credentials and endpoint for the Nova sync controller. The whole
+# `config` block below is rendered into a Kubernetes Secret and mounted into the
+# manager pod at /etc/vm-operator/openstack/openstack.json, where the manager
+# loads it at startup. Field names match nova.OpenStackClientConfig's JSON tags.
+#
+# Leave enabled=false (the default) to deploy the manager without a Nova client;
+# the sync controller will not function until this is configured. For local dev
+# the Tiltfile fills these from your shell's OS_* environment variables.
+openstack:
+  enabled: false
+  # Whether the chart renders the credentials Secret from the `config` block
+  # below. Set to false when the Secret is created out-of-band (e.g. by Tilt in
+  # local dev, so the password never passes through a `helm --set` argument);
+  # the manager still gets the volume/mount/flag as long as `enabled` is true.
+  createSecret: true
+  config:
+    # Keystone identity endpoint (OS_AUTH_URL), e.g. https://keystone.example.com/v3
+    url: ""
+    # Service-catalog endpoint to use: public, internal, or admin.
+    availability: public
+    # Technical user credentials (OS_USERNAME / OS_PASSWORD).
+    username: ""
+    password: ""
+    # Project and domain scope (OS_PROJECT_NAME / OS_USER_DOMAIN_NAME /
+    # OS_PROJECT_DOMAIN_NAME).
+    projectName: ""
+    userDomainName: ""
+    projectDomainName: ""
+    # Optional: region (OS_REGION_NAME) and Nova microversion.
+    region: ""
+    microversion: ""
