@@ -271,6 +271,10 @@ func (in *VMStatus) DeepCopyInto(out *VMStatus) {
 		*out = new(NovaStatus)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.DeletionTime != nil {
+		in, out := &in.DeletionTime, &out.DeletionTime
+		*out = (*in).DeepCopy()
+	}
 	if in.Libvirt != nil {
 		in, out := &in.Libvirt, &out.Libvirt
 		*out = new(LibvirtStatus)

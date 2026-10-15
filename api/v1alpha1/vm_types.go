@@ -366,6 +366,14 @@ type VMStatus struct {
 	// +kubebuilder:validation:Optional
 	Nova *NovaStatus `json:"nova,omitempty"`
 
+	// DeletionTime is the time at which the cleanup controller will prune this
+	// VirtualMachine. It is set when Nova reports the server as DELETED, giving
+	// a grace window before the resource is actually removed. Absent when no
+	// deletion is scheduled; cleared if Nova reports the server live again
+	// before the window elapses.
+	// +kubebuilder:validation:Optional
+	DeletionTime *metav1.Time `json:"deletionTime,omitempty"`
+
 	// Libvirt holds state reported by libvirt for this VM.
 	// +kubebuilder:validation:Optional
 	Libvirt *LibvirtStatus `json:"libvirt,omitempty"`
@@ -425,6 +433,7 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date"
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.ownership.project",name="Project",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.nova.lastSyncTime",name="NovaLastSync",type="date",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.deletionTime",name="DeletionTime",type="date",priority=1
 
 // VirtualMachine tracks a Nova VM from initial placement through its full lifetime.
 type VirtualMachine struct {

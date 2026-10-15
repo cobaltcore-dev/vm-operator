@@ -66,6 +66,12 @@ spec:
             {{- with .Values.nova.syncInterval }}
             - --nova-sync-interval={{ . }}
             {{- end }}
+            {{- with .Values.nova.orphanTTL }}
+            - --nova-orphan-ttl={{ . }}
+            {{- end }}
+            {{- with .Values.nova.deletionTTL }}
+            - --nova-deletion-ttl={{ . }}
+            {{- end }}
             {{- end }}
           ports:
             - name: metrics

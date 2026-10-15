@@ -65,6 +65,10 @@ spec:
       name: NovaLastSync
       priority: 1
       type: date
+    - jsonPath: .status.deletionTime
+      name: DeletionTime
+      priority: 1
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -436,6 +440,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              deletionTime:
+                description: |-
+                  DeletionTime is the time at which the cleanup controller will prune this
+                  VirtualMachine. It is set when Nova reports the server as DELETED, giving
+                  a grace window before the resource is actually removed. Absent when no
+                  deletion is scheduled; cleared if Nova reports the server live again
+                  before the window elapses.
+                format: date-time
+                type: string
               host:
                 description: Host is a reference to the host this VM is currently
                   running on.

@@ -107,6 +107,16 @@ nova:
   # value falls back to the manager's built-in default (300s), and values below
   # one second are clamped. Rendered as the --nova-sync-interval flag.
   syncInterval: 300s
+  # How long a VirtualMachine carrying no Nova status may exist (measured from
+  # creation) before the garbage collector prunes it as an orphan. A fresh or
+  # slow-to-sync resource is granted this full window before it becomes
+  # eligible. Rendered as the --nova-orphan-ttl flag.
+  orphanTTL: 1h
+  # Grace window between the garbage collector marking a VM for deletion (Nova
+  # reported the server DELETED) and actually deleting it. If Nova reports the
+  # server live again within this window, the deletion is cancelled. Rendered as
+  # the --nova-deletion-ttl flag.
+  deletionTTL: 1h
 
 # [OpenStack]: credentials and endpoint for the Nova sync controller. The whole
 # `config` block below is rendered into a Kubernetes Secret and mounted into the

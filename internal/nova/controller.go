@@ -41,7 +41,7 @@ const DefaultInterval = 5 * time.Minute
 // server's state from Nova and writing it onto the resource. The poll loop makes
 // no per-server Nova calls — it diffs a single bulk listing.
 //
-// Reconcile never deletes resources; pruning is CleanupController's job. It only
+// Reconcile never deletes resources; pruning is GarbageCollector's job. It only
 // records Nova's view, including clearing the Nova fields when the server is gone.
 //
 // RBAC (templated by hand in dist/templates/rbac.yaml):
@@ -394,7 +394,7 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 //
 // There is no For(&VirtualMachine{}) watch: this controller is driven solely by
 // the eventCh raw source fed by the poll loop. Watch-driven reconciliation of
-// the CRD (e.g. pruning) is handled by CleanupController.
+// the CRD (e.g. pruning) is handled by GarbageCollector.
 func (c *Controller) SetupWithManager(mgr manager.Manager) error {
 	if mgr == nil {
 		return errors.New("nil manager")

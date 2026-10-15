@@ -50,6 +50,8 @@ func main() {
 	var multiclusterConfigPath string
 	var openstackConfigPath string
 	var novaSyncInterval time.Duration
+	var novaOrphanTTL time.Duration
+	var novaDeletionTTL time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":2112",
 		"The address the metrics endpoint binds to.")
@@ -64,6 +66,12 @@ func main() {
 		"Path to the OpenStack client configuration file (mounted from a Secret).")
 	flag.DurationVar(&novaSyncInterval, "nova-sync-interval", nova.DefaultInterval,
 		"How often the Nova sync controller polls Nova for changed servers.")
+	flag.DurationVar(&novaOrphanTTL, "nova-orphan-ttl", nova.DefaultOrphanTTL,
+		"How long a VirtualMachine carrying no Nova status may exist (measured from "+
+			"creation) before the garbage collector prunes it.")
+	flag.DurationVar(&novaDeletionTTL, "nova-deletion-ttl", nova.DefaultDeletionTTL,
+		"Grace window between the garbage collector marking a VM for deletion (Nova "+
+			"reported the server DELETED) and actually deleting it.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -186,10 +194,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := (&nova.CleanupController{
-			Client:  multiclusterClient,
-			Scheme:  mgr.GetScheme(),
-			Metrics: novaMetrics,
+		if err := (&nova.GarbageCollector{
+			Client:      multiclusterClient,
+			Scheme:      mgr.GetScheme(),
+			OrphanTTL:   novaOrphanTTL,
+			DeletionTTL: novaDeletionTTL,
+			Metrics:     novaMetrics,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "nova-cleanup")
 			os.Exit(1)
