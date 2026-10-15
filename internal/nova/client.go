@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
@@ -250,49 +251,30 @@ func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]se
 
 // FetchServer returns the current state of a single Nova server by uuid.
 //
-// Like FetchServers, it requests with all_tenants=true: the technical user is
-// scoped to one project but watches servers across all of them, and a plain
-// server GET is scoped to the token's project — Nova answers 404 (not 403) for a
-// server owned by another project, which would be misread as "the server is
-// gone". gophercloud's servers.Get cannot pass that query parameter, so the
-// request is hand-built here (mirroring fetchServerPage's token/microversion
-// handling). A genuine 404 is still reported as (nil, false, nil) so the
-// reconciler can treat a truly absent server as gone.
+// It does NOT use the member endpoint GET /servers/{id}: that call is scoped to
+// the token's project, and its only cross-project lever, all_tenants, is not a
+// valid parameter there so Nova silently ignores it — a server owned by another
+// project then 404s and is misread as "gone". Instead it queries the list
+// endpoint the same way FetchServers does (all_tenants=true, an admin path the
+// technical user is allowed) with the admin-only uuid filter, which returns the
+// one matching server across all projects. An empty result means the server is
+// genuinely gone, reported as (nil, false, nil).
 func (c *openStackClient) FetchServer(ctx context.Context, uuid string) (*servers.Server, bool, error) {
 	// ResourceBaseURL ends with a "/", so this yields e.g.
-	// ".../compute/v2.1/servers/{uuid}?all_tenants=true".
-	url := c.compute.ResourceBaseURL() + "servers/" + uuid + "?all_tenants=true"
+	// ".../compute/v2.1/servers/detail?all_tenants=true&uuid={uuid}". Reusing the
+	// detailed list endpoint keeps the server shape identical to FetchServers.
+	url := c.compute.ResourceBaseURL() + "servers/detail?all_tenants=true&uuid=" + neturl.QueryEscape(uuid)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-	if err != nil {
-		return nil, false, fmt.Errorf("building nova server request for %s: %w", uuid, err)
-	}
-	req.Header.Set("X-Auth-Token", c.compute.Token())
-	if c.compute.Microversion != "" {
-		req.Header.Set("X-OpenStack-Nova-API-Version", c.compute.Microversion)
-	}
-
-	resp, err := c.compute.HTTPClient.Do(req)
+	page, _, err := c.fetchServerPage(ctx, url)
 	if err != nil {
 		return nil, false, fmt.Errorf("getting nova server %s: %w", uuid, err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, false, nil
+	for i := range page {
+		if page[i].ID == uuid {
+			return &page[i], true, nil
+		}
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("getting nova server %s: unexpected status code %d", uuid, resp.StatusCode)
-	}
-
-	// The single-server GET wraps the server as {"server": {...}}. servers.Server
-	// has a custom UnmarshalJSON, so decoding into it here matches servers.Get().Extract().
-	var body struct {
-		Server servers.Server `json:"server"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, false, fmt.Errorf("decoding nova server %s: %w", uuid, err)
-	}
-	return &body.Server, true, nil
+	return nil, false, nil
 }
 
 // FetchFlavor returns the Nova flavor with the given id, including its extra

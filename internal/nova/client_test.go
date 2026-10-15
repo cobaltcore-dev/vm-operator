@@ -230,12 +230,19 @@ func TestFetchServers_contextCancelled(t *testing.T) {
 	}
 }
 
-func TestFetchServer_requestsAllTenants(t *testing.T) {
+func TestFetchServer_requestsAllTenantsAndUUIDFilter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A single-server GET must also be admin-scoped: without all_tenants, Nova
-		// 404s a server owned by another project, which would read as "gone".
+		// FetchServer must query the list endpoint (not the project-scoped member
+		// GET) with the admin all_tenants + uuid filter, so a server owned by another
+		// project is still returned.
+		if got := r.URL.Path; got != "/servers/detail" {
+			t.Errorf("path = %q, want /servers/detail", got)
+		}
 		if got := r.URL.Query().Get("all_tenants"); got != "true" {
 			t.Errorf("all_tenants = %q, want \"true\"", got)
+		}
+		if got := r.URL.Query().Get("uuid"); got != "a" {
+			t.Errorf("uuid = %q, want \"a\"", got)
 		}
 		if got := r.Header.Get("X-Auth-Token"); got != "tok" {
 			t.Errorf("X-Auth-Token = %q, want \"tok\"", got)
@@ -243,7 +250,7 @@ func TestFetchServer_requestsAllTenants(t *testing.T) {
 		if got := r.Header.Get("X-OpenStack-Nova-API-Version"); got != "2.66" {
 			t.Errorf("microversion header = %q, want \"2.66\"", got)
 		}
-		writeJSON(t, w, `{"server":{"id":"a","status":"ACTIVE"}}`)
+		writeJSON(t, w, `{"servers":[{"id":"a","status":"ACTIVE"}]}`)
 	}))
 	defer srv.Close()
 
@@ -260,16 +267,17 @@ func TestFetchServer_requestsAllTenants(t *testing.T) {
 	}
 }
 
-func TestFetchServer_notFoundIsGone(t *testing.T) {
+func TestFetchServer_emptyResultIsGone(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		// No matching server across any project: an empty list, not a 404.
+		writeJSON(t, w, `{"servers":[]}`)
 	}))
 	defer srv.Close()
 
 	client := newTestOpenStackClient(srv, "tok", "")
 	server, found, err := client.FetchServer(context.Background(), "missing")
 	if err != nil {
-		t.Fatalf("a 404 must be reported as gone, not an error: %v", err)
+		t.Fatalf("an empty result must be reported as gone, not an error: %v", err)
 	}
 	if found || server != nil {
 		t.Errorf("got (found=%v, server=%+v), want (false, nil)", found, server)
@@ -284,6 +292,6 @@ func TestFetchServer_errorOnNon200(t *testing.T) {
 
 	client := newTestOpenStackClient(srv, "tok", "")
 	if _, _, err := client.FetchServer(context.Background(), "a"); err == nil {
-		t.Fatal("expected an error for a non-200, non-404 response")
+		t.Fatal("expected an error for a non-200 response")
 	}
 }
