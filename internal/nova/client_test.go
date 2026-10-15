@@ -229,3 +229,61 @@ func TestFetchServers_contextCancelled(t *testing.T) {
 		t.Fatal("expected an error when the context is already cancelled")
 	}
 }
+
+func TestFetchServer_requestsAllTenants(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A single-server GET must also be admin-scoped: without all_tenants, Nova
+		// 404s a server owned by another project, which would read as "gone".
+		if got := r.URL.Query().Get("all_tenants"); got != "true" {
+			t.Errorf("all_tenants = %q, want \"true\"", got)
+		}
+		if got := r.Header.Get("X-Auth-Token"); got != "tok" {
+			t.Errorf("X-Auth-Token = %q, want \"tok\"", got)
+		}
+		if got := r.Header.Get("X-OpenStack-Nova-API-Version"); got != "2.66" {
+			t.Errorf("microversion header = %q, want \"2.66\"", got)
+		}
+		writeJSON(t, w, `{"server":{"id":"a","status":"ACTIVE"}}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "2.66")
+	server, found, err := client.FetchServer(context.Background(), "a")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	if server.ID != "a" || server.Status != "ACTIVE" {
+		t.Errorf("server = %+v, want id=a status=ACTIVE", server)
+	}
+}
+
+func TestFetchServer_notFoundIsGone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	server, found, err := client.FetchServer(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("a 404 must be reported as gone, not an error: %v", err)
+	}
+	if found || server != nil {
+		t.Errorf("got (found=%v, server=%+v), want (false, nil)", found, server)
+	}
+}
+
+func TestFetchServer_errorOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	if _, _, err := client.FetchServer(context.Background(), "a"); err == nil {
+		t.Fatal("expected an error for a non-200, non-404 response")
+	}
+}

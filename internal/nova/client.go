@@ -248,18 +248,51 @@ func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]se
 	return list.Servers, next, nil
 }
 
-// FetchServer returns the current state of a single Nova server. A 404 from
-// Nova is reported as (nil, false, nil) so the reconciler can treat it as "the
-// server is gone" rather than an error.
+// FetchServer returns the current state of a single Nova server by uuid.
+//
+// Like FetchServers, it requests with all_tenants=true: the technical user is
+// scoped to one project but watches servers across all of them, and a plain
+// server GET is scoped to the token's project — Nova answers 404 (not 403) for a
+// server owned by another project, which would be misread as "the server is
+// gone". gophercloud's servers.Get cannot pass that query parameter, so the
+// request is hand-built here (mirroring fetchServerPage's token/microversion
+// handling). A genuine 404 is still reported as (nil, false, nil) so the
+// reconciler can treat a truly absent server as gone.
 func (c *openStackClient) FetchServer(ctx context.Context, uuid string) (*servers.Server, bool, error) {
-	server, err := servers.Get(ctx, c.compute, uuid).Extract()
+	// ResourceBaseURL ends with a "/", so this yields e.g.
+	// ".../compute/v2.1/servers/{uuid}?all_tenants=true".
+	url := c.compute.ResourceBaseURL() + "servers/" + uuid + "?all_tenants=true"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
-		if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
-			return nil, false, nil
-		}
+		return nil, false, fmt.Errorf("building nova server request for %s: %w", uuid, err)
+	}
+	req.Header.Set("X-Auth-Token", c.compute.Token())
+	if c.compute.Microversion != "" {
+		req.Header.Set("X-OpenStack-Nova-API-Version", c.compute.Microversion)
+	}
+
+	resp, err := c.compute.HTTPClient.Do(req)
+	if err != nil {
 		return nil, false, fmt.Errorf("getting nova server %s: %w", uuid, err)
 	}
-	return server, true, nil
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, false, fmt.Errorf("getting nova server %s: unexpected status code %d", uuid, resp.StatusCode)
+	}
+
+	// The single-server GET wraps the server as {"server": {...}}. servers.Server
+	// has a custom UnmarshalJSON, so decoding into it here matches servers.Get().Extract().
+	var body struct {
+		Server servers.Server `json:"server"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, false, fmt.Errorf("decoding nova server %s: %w", uuid, err)
+	}
+	return &body.Server, true, nil
 }
 
 // FetchFlavor returns the Nova flavor with the given id, including its extra
