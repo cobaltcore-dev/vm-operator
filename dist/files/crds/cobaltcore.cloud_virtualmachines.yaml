@@ -150,6 +150,11 @@ spec:
                       - uuid
                       type: object
                     type: array
+                  explanation:
+                    description: |-
+                      Explanation is a human-readable explanation of the scheduling decision
+                      made by Cortex.
+                    type: string
                   hostCandidates:
                     description: HostCandidates is the set of host references Cortex
                       has considered for the most recent scheduling operation of the
@@ -199,6 +204,14 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     type: array
+                  intent:
+                    description: |-
+                      Intent is the last operation performed on this virtual machine,
+                      e.g. initial placement, evacuation, live-migration, rebuild, etc.
+                      This is an information provided by Nova to Cortex, but it is
+                      persisted nowhere inside the Nova database, so Cortex propagates
+                      this information into the CortexSpec.
+                    type: string
                 type: object
               hypervisorType:
                 description: HypervisorType is the hypervisor type of the host where

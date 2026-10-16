@@ -355,6 +355,19 @@ type CortexSpec struct {
 	// scheduling operation has completed.
 	// +kubebuilder:validation:Optional
 	Consumers []PlacementConsumer `json:"consumers,omitempty"`
+
+	// Explanation is a human-readable explanation of the scheduling decision
+	// made by Cortex.
+	// +kubebuilder:validation:Optional
+	Explanation string `json:"explanation,omitempty"`
+
+	// Intent is the last operation performed on this virtual machine,
+	// e.g. initial placement, evacuation, live-migration, rebuild, etc.
+	// This is an information provided by Nova to Cortex, but it is
+	// persisted nowhere inside the Nova database, so Cortex propagates
+	// this information into the CortexSpec.
+	// +kubebuilder:validation:Optional
+	Intent string `json:"intent,omitempty"`
 }
 
 // VMStatus defines the observed state of a VirtualMachine.
