@@ -420,21 +420,19 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:selectablefield:JSONPath=".spec.az"
 // +kubebuilder:selectablefield:JSONPath=".spec.targetHost.name"
 // +kubebuilder:selectablefield:JSONPath=".status.host.name"
+// Default columns.
+// +kubebuilder:printcolumn:JSONPath=".metadata.name",name="UUID",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
-// +kubebuilder:printcolumn:JSONPath=".spec.hypervisorType",name="HvType",type="string"
-// +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="Flavor",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.cpu",name="CPU",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.memory",name="Memory",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].status",name="Running",type="string"
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"Running\")].reason",name="State",type="string"
+// +kubebuilder:printcolumn:JSONPath=".spec.targetHost.name",name="TargetHost",type="string"
+// +kubebuilder:printcolumn:JSONPath=".status.host.name",name="ActualHost",type="string"
+// Wide-only columns (priority=1).
 // +kubebuilder:printcolumn:JSONPath=".status.nova.host",name="NovaHost",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".spec.targetHost.name",name="TargetHost",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaSynced\")].status",name="NovaSynced",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.nova.status",name="NovaState",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date"
-// +kubebuilder:printcolumn:JSONPath=".spec.nova.ownership.project",name="Project",type="string",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.nova.lastSyncTime",name="NovaLastSync",type="date",priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.deletionTime",name="DeletionTime",type="date",priority=1
+// +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="NovaFlavor",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaSynced\")].reason",name="NovaSync",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".spec.hypervisorType",name="Hv",type="string",priority=1
 
 // VirtualMachine tracks a Nova VM from initial placement through its full lifetime.
 type VirtualMachine struct {

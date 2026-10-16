@@ -17,14 +17,11 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .metadata.name
+      name: UUID
+      type: string
     - jsonPath: .spec.az
       name: AZ
-      type: string
-    - jsonPath: .spec.hypervisorType
-      name: HvType
-      type: string
-    - jsonPath: .spec.nova.flavor.name
-      name: Flavor
       type: string
     - jsonPath: .spec.resources.cpu
       name: CPU
@@ -32,43 +29,32 @@ spec:
     - jsonPath: .spec.resources.memory
       name: Memory
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Running")].status
-      name: Running
+    - jsonPath: .spec.targetHost.name
+      name: TargetHost
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Running")].reason
-      name: State
+    - jsonPath: .status.host.name
+      name: ActualHost
       type: string
     - jsonPath: .status.nova.host
       name: NovaHost
-      priority: 1
-      type: string
-    - jsonPath: .spec.targetHost.name
-      name: TargetHost
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="NovaSynced")].status
-      name: NovaSynced
       priority: 1
       type: string
     - jsonPath: .status.nova.status
       name: NovaState
       priority: 1
       type: string
-    - jsonPath: .metadata.creationTimestamp
-      name: Age
-      type: date
-    - jsonPath: .spec.nova.ownership.project
-      name: Project
+    - jsonPath: .spec.nova.flavor.name
+      name: NovaFlavor
       priority: 1
       type: string
-    - jsonPath: .status.nova.lastSyncTime
-      name: NovaLastSync
+    - jsonPath: .status.conditions[?(@.type=="NovaSynced")].reason
+      name: NovaSync
       priority: 1
-      type: date
-    - jsonPath: .status.deletionTime
-      name: DeletionTime
+      type: string
+    - jsonPath: .spec.hypervisorType
+      name: Hv
       priority: 1
-      type: date
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
