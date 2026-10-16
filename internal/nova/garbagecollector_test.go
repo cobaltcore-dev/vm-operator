@@ -398,4 +398,3 @@ func TestGarbageCollector_watchPredicate_ignoresDeletionTimeWrites(t *testing.T)
 		t.Error("a NovaSynced ServerGone transition must count as a GC input change")
 	}
 }
-
