@@ -8,12 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
 )
@@ -286,3 +288,114 @@ func assertDeleted(t *testing.T, c client.Reader, name string) {
 		t.Fatalf("expected %s to be deleted, got err=%v", name, err)
 	}
 }
+
+// The re-enqueue loop enqueues every VirtualMachine unconditionally — regardless
+// of state — because Reconcile, not the loop, decides eligibility.
+func TestGarbageCollector_enqueueAll_enqueuesAllVMs(t *testing.T) {
+	const (
+		healthy = "11111111-1111-1111-1111-111111111111"
+		gone    = "22222222-2222-2222-2222-222222222222"
+		deleted = "33333333-3333-3333-3333-333333333333"
+	)
+
+	scheme := newTestScheme(t)
+	healthyVM := seedVM(healthy, &servers.Server{ID: healthy, Status: "ACTIVE", Host: "compute-1"})
+	goneVM := seedVM(gone, &servers.Server{ID: gone, Status: "ACTIVE", Host: "compute-1"})
+	meta.SetStatusCondition(&goneVM.Status.Conditions, metav1.Condition{
+		Type:   v1alpha1.ConditionTypeNovaSynced,
+		Status: metav1.ConditionTrue,
+		Reason: v1alpha1.ConditionReasonNovaSyncedGone,
+	})
+	deletedVM := seedVM(deleted, &servers.Server{ID: deleted, Status: "DELETED"})
+
+	c := &GarbageCollector{
+		Client:  newTestClient(t, scheme, healthyVM, goneVM, deletedVM),
+		eventCh: make(chan event.GenericEvent, 8),
+	}
+
+	c.enqueueAll(context.Background(), logr.Discard())
+	got := drainEvents(c.eventCh)
+
+	for _, want := range []string{healthy, gone, deleted} {
+		if !got[want] {
+			t.Errorf("expected %q to be enqueued, got %v", want, got)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("expected exactly 3 enqueued uuids, got %d: %v", len(got), got)
+	}
+}
+
+// With an unbuffered channel and no reader, enqueueAll must unblock when the
+// context is cancelled rather than deadlocking on the channel send.
+func TestGarbageCollector_enqueueAll_respectsContextCancellation(t *testing.T) {
+	scheme := newTestScheme(t)
+	vm := seedVM(testVMUUID, &servers.Server{ID: testVMUUID, Status: "ACTIVE", Host: "compute-1"})
+	c := &GarbageCollector{
+		Client:  newTestClient(t, scheme, vm),
+		eventCh: make(chan event.GenericEvent),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		c.enqueueAll(ctx, logr.Discard())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("enqueueAll did not return after context cancellation")
+	}
+}
+
+// The watch predicate must fire on a prune-relevant transition but drop the
+// collector's own DeletionTime-only writes, so marking/cancelling a deletion does
+// not re-trigger the reconciler (the self-trigger loop).
+func TestGarbageCollector_watchPredicate_ignoresDeletionTimeWrites(t *testing.T) {
+	healthy := func() *v1alpha1.VirtualMachine {
+		vm := seedVM(testVMUUID, &servers.Server{ID: testVMUUID, Status: "ACTIVE", Host: "compute-1"})
+		meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
+			Type:   v1alpha1.ConditionTypeNovaSynced,
+			Status: metav1.ConditionTrue,
+			Reason: v1alpha1.ConditionReasonNovaSyncedUpToDate,
+		})
+		return vm
+	}
+	gone := func() *v1alpha1.VirtualMachine {
+		vm := healthy()
+		meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
+			Type:   v1alpha1.ConditionTypeNovaSynced,
+			Status: metav1.ConditionTrue,
+			Reason: v1alpha1.ConditionReasonNovaSyncedGone,
+		})
+		return vm
+	}
+
+	// A healthy server is not a prune candidate.
+	if pruneRelevant(healthy()) {
+		t.Error("healthy VM should not be prune-relevant")
+	}
+	// A gone server is.
+	if !pruneRelevant(gone()) {
+		t.Error("gone VM should be prune-relevant")
+	}
+
+	// The collector's own mark write only sets DeletionTime: gcInputChanged must
+	// report no change so the watch does not re-trigger.
+	marked := gone()
+	deleteAt := metav1.NewTime(time.Now().Add(time.Hour))
+	marked.Status.DeletionTime = &deleteAt
+	if gcInputChanged(gone(), marked) {
+		t.Error("a DeletionTime-only write must not count as a GC input change (self-trigger)")
+	}
+
+	// A real transition (healthy -> gone) must count as a change.
+	if !gcInputChanged(healthy(), gone()) {
+		t.Error("a NovaSynced ServerGone transition must count as a GC input change")
+	}
+}
+

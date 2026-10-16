@@ -107,6 +107,12 @@ nova:
   # value falls back to the manager's built-in default (300s), and values below
   # one second are clamped. Rendered as the --nova-sync-interval flag.
   syncInterval: 300s
+  # How often the garbage collector re-enqueues every VirtualMachine so a deferred
+  # prune survives a pod restart or leader-election failover (the in-memory
+  # requeue that would otherwise apply it is lost on restart). A non-positive
+  # value falls back to the manager's built-in default (600s); values below one
+  # second are clamped. Rendered as the --nova-gc-interval flag.
+  gcInterval: 300s
   # How long a VirtualMachine carrying no Nova status may exist (measured from
   # creation) before the garbage collector prunes it as an orphan. A fresh or
   # slow-to-sync resource is granted this full window before it becomes
