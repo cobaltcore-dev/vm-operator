@@ -52,6 +52,14 @@ spec:
       name: Hv
       priority: 1
       type: string
+    - jsonPath: .spec.cortex.intent
+      name: LastOp
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      priority: 1
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:

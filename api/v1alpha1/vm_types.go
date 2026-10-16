@@ -445,6 +445,8 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:printcolumn:JSONPath=".spec.nova.flavor.name",name="NovaFlavor",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type==\"NovaSynced\")].reason",name="NovaSync",type="string",priority=1
 // +kubebuilder:printcolumn:JSONPath=".spec.hypervisorType",name="Hv",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".spec.cortex.intent",name="LastOp",type="string",priority=1
+// +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type="date",priority=1
 
 // VirtualMachine tracks a Nova VM from initial placement through its full lifetime.
 type VirtualMachine struct {
