@@ -251,30 +251,60 @@ func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]se
 
 // FetchServer returns the current state of a single Nova server by uuid.
 //
-// TODO(investigate): the detailed list endpoint excludes deleted servers by
-// default, so a server Nova has marked DELETED returns (nil, false, nil) here
-// and is misread by the sync controller as "gone" (routing it to the
-// GarbageCollector's OrphanTTL path) rather than surfacing status=DELETED so it
-// takes the DeletionTTL deferred-deletion path. Investigate requesting
-// deleted=true / changes-since so a DELETED server's status can be reported.
+// It queries in two steps. First a live lookup via the detailed list endpoint
+// (all_tenants=true + the uuid filter), which is authoritative when the server
+// still exists. If that is empty, it retries with the admin `deleted` toggle to
+// pick up a soft-deleted server: a DELETED server must be surfaced (with
+// status=DELETED) so the sync controller records it and the GarbageCollector
+// takes the deferred-deletion (DeletionTTL) path rather than treating it as an
+// orphan. An empty result from both means the server is genuinely gone,
+// reported as (nil, false, nil). A fetch error from either request is returned
+// (never silently treated as gone), so a transient Nova failure does not look
+// like a deletion.
 //
 // It does NOT use the member endpoint GET /servers/{id}: that call is scoped to
 // the token's project, and its only cross-project lever, all_tenants, is not a
 // valid parameter there so Nova silently ignores it — a server owned by another
-// project then 404s and is misread as "gone". Instead it queries the list
-// endpoint the same way FetchServers does (all_tenants=true, an admin path the
-// technical user is allowed) with the admin-only uuid filter, which returns the
-// one matching server across all projects. An empty result means the server is
-// genuinely gone, reported as (nil, false, nil).
+// project then 404s and is misread as "gone". The list endpoint with the
+// admin-only all_tenants + uuid filter returns the one matching server across
+// all projects, keeping the server shape identical to FetchServers.
 func (c *openStackClient) FetchServer(ctx context.Context, uuid string) (*servers.Server, bool, error) {
+	// Live lookup first — authoritative when the server still exists.
+	server, found, err := c.fetchServerByUUID(ctx, uuid, false)
+	if err != nil {
+		return nil, false, fmt.Errorf("getting nova server %s: %w", uuid, err)
+	}
+	if found {
+		return server, true, nil
+	}
+
+	// Not live: it may be soft-deleted. Surface a DELETED server so the regular
+	// deletion path (DeletionTTL) applies instead of the orphan path.
+	server, found, err = c.fetchServerByUUID(ctx, uuid, true)
+	if err != nil {
+		return nil, false, fmt.Errorf("getting deleted nova server %s: %w", uuid, err)
+	}
+	// Empty in both: genuinely gone.
+	return server, found, nil
+}
+
+// fetchServerByUUID queries the detailed list endpoint for a single server by
+// uuid across all projects. When deleted is true it asks Nova for soft-deleted
+// servers only (the admin-only `deleted` toggle, which replaces rather than
+// augments the live set); when false it returns live servers. It reuses
+// fetchServerPage so the server shape matches FetchServers, and reports a server
+// not present in the response as (nil, false, nil).
+func (c *openStackClient) fetchServerByUUID(ctx context.Context, uuid string, deleted bool) (*servers.Server, bool, error) {
 	// ResourceBaseURL ends with a "/", so this yields e.g.
-	// ".../compute/v2.1/servers/detail?all_tenants=true&uuid={uuid}". Reusing the
-	// detailed list endpoint keeps the server shape identical to FetchServers.
+	// ".../compute/v2.1/servers/detail?all_tenants=true&uuid={uuid}".
 	url := c.compute.ResourceBaseURL() + "servers/detail?all_tenants=true&uuid=" + neturl.QueryEscape(uuid)
+	if deleted {
+		url += "&deleted=true"
+	}
 
 	page, _, err := c.fetchServerPage(ctx, url)
 	if err != nil {
-		return nil, false, fmt.Errorf("getting nova server %s: %w", uuid, err)
+		return nil, false, err
 	}
 	for i := range page {
 		if page[i].ID == uuid {
