@@ -295,3 +295,94 @@ func TestFetchServer_errorOnNon200(t *testing.T) {
 		t.Fatal("expected an error for a non-200 response")
 	}
 }
+
+// A server absent from the live listing but present as soft-deleted is surfaced
+// with status=DELETED, via a fallback query carrying the admin deleted toggle,
+// so the controller can route it to the deferred-deletion path.
+func TestFetchServer_fallsBackToDeletedServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("deleted") == "true" {
+			// Deleted lookup must still be the all_tenants + uuid admin query.
+			if got := r.URL.Query().Get("all_tenants"); got != "true" {
+				t.Errorf("deleted query all_tenants = %q, want \"true\"", got)
+			}
+			if got := r.URL.Query().Get("uuid"); got != "a" {
+				t.Errorf("deleted query uuid = %q, want \"a\"", got)
+			}
+			writeJSON(t, w, `{"servers":[{"id":"a","status":"DELETED"}]}`)
+			return
+		}
+		// Live lookup: not found.
+		writeJSON(t, w, `{"servers":[]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	server, found, err := client.FetchServer(context.Background(), "a")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true for a soft-deleted server")
+	}
+	if server.ID != "a" || server.Status != "DELETED" {
+		t.Errorf("server = %+v, want id=a status=DELETED", server)
+	}
+}
+
+// When the server is live, the authoritative live lookup wins and the deleted
+// fallback is never issued.
+func TestFetchServer_prefersLiveOverDeleted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("deleted") == "true" {
+			t.Error("deleted fallback must not run when the server is live")
+			writeJSON(t, w, `{"servers":[{"id":"a","status":"DELETED"}]}`)
+			return
+		}
+		writeJSON(t, w, `{"servers":[{"id":"a","status":"ACTIVE"}]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	server, found, err := client.FetchServer(context.Background(), "a")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found || server.Status != "ACTIVE" {
+		t.Errorf("got (found=%v, server=%+v), want (true, ACTIVE)", found, server)
+	}
+}
+
+// Absent from both the live and deleted listings: genuinely gone.
+func TestFetchServer_goneWhenAbsentFromBoth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, `{"servers":[]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	server, found, err := client.FetchServer(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("absence from both must be gone, not an error: %v", err)
+	}
+	if found || server != nil {
+		t.Errorf("got (found=%v, server=%+v), want (false, nil)", found, server)
+	}
+}
+
+// A failure on the deleted fallback query is returned, not misreported as gone.
+func TestFetchServer_errorOnDeletedQueryNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("deleted") == "true" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		writeJSON(t, w, `{"servers":[]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	if _, _, err := client.FetchServer(context.Background(), "a"); err == nil {
+		t.Fatal("expected an error when the deleted fallback query fails")
+	}
+}

@@ -130,7 +130,7 @@ func (c ConvertedVirtualMachine) HasChanged(vm *v1alpha1.VirtualMachine) bool {
 func (c ConvertedVirtualMachine) PatchInto(vm *v1alpha1.VirtualMachine) {
 	var lastSync *metav1.Time
 	if vm.Status.Nova != nil {
-		lastSync = vm.Status.Nova.LastSyncTime // preserved so cleanup can measure orphan TTL.
+		lastSync = vm.Status.Nova.LastSyncTime // carried forward across syncs.
 	}
 	vm.Spec.Nova = c.Spec.Nova
 	vm.Status.Nova = &v1alpha1.NovaStatus{

@@ -119,8 +119,9 @@ const (
 	// successfully reconciled against Nova's current view of the server,
 	// including when Nova reports the server as gone.
 	ConditionReasonNovaSyncedUpToDate = "UpToDate"
-	// ConditionReasonNovaSyncedGone is set when Nova no longer knows the server
-	// and the Nova-derived fields have been cleared from the resource.
+	// ConditionReasonNovaSyncedGone is set when a sync succeeded but Nova no
+	// longer knows the server. The last-known Nova-derived fields are retained on
+	// the resource; this reason is the sole record that the server is gone.
 	ConditionReasonNovaSyncedGone = "ServerGone"
 	// ConditionReasonNovaSyncedError is set when the sync failed, e.g. Nova was
 	// unreachable.
