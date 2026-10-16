@@ -127,6 +127,10 @@ func (c ConvertedVirtualMachine) HasChanged(vm *v1alpha1.VirtualMachine) bool {
 
 // PatchInto applies the sync-owned fields (Spec.Nova and Status.Nova) onto vm,
 // leaving the immutable spec, conditions, Status.Host and LastSyncTime untouched.
+//
+// It writes only Spec.Nova and Status.Nova, so the Cortex subspec (Spec.Cortex,
+// owned by the Cortex placement API) is deliberately left as-is: the Nova sync
+// must never clobber it when updating a resource.
 func (c ConvertedVirtualMachine) PatchInto(vm *v1alpha1.VirtualMachine) {
 	var lastSync *metav1.Time
 	if vm.Status.Nova != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -274,6 +275,51 @@ func TestController_Reconcile_syncsExistingVM(t *testing.T) {
 		t.Error("expected LastSyncTime to be stamped on sync")
 	}
 	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
+}
+
+// TestController_Reconcile_preservesCortexSpec verifies the full update path (the
+// spec patch, not just PatchInto) leaves the Cortex subspec intact: the nova
+// syncer owns Spec.Nova, while Spec.Cortex is owned by the Cortex placement API.
+func TestController_Reconcile_preservesCortexSpec(t *testing.T) {
+	const name = testVMUUID
+
+	scheme := newTestScheme(t)
+	vm := &v1alpha1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.VMSpec{
+			Cortex: &v1alpha1.CortexSpec{
+				HostCandidates: []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-9"}},
+			},
+		},
+	}
+	c := &Controller{
+		Client: newTestClient(t, scheme, vm),
+		Scheme: scheme,
+		OpenStack: &fakeOpenStackClient{
+			// A server whose nova fields differ from the seeded VM, forcing a spec patch.
+			result: []servers.Server{
+				{ID: name, Status: "ACTIVE", Host: "compute-1", TenantID: "proj", InstanceName: "web-1", Flavor: map[string]any{"id": "f"}},
+			},
+			flavors: map[string]*flavors.Flavor{"f": qemuFlavor("f", 2, 2048)},
+		},
+	}
+
+	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	got := getVM(t, c)
+	// The nova sync must have run (spec.nova patched)...
+	if got.Spec.Nova.InstanceName != "web-1" {
+		t.Errorf("spec.nova.instanceName = %q, want web-1 (sync did not run)", got.Spec.Nova.InstanceName)
+	}
+	// ...without clobbering the Cortex subspec.
+	if got.Spec.Cortex == nil {
+		t.Fatal("spec.cortex was cleared by the nova sync")
+	}
+	if len(got.Spec.Cortex.HostCandidates) != 1 || got.Spec.Cortex.HostCandidates[0].Name != "compute-9" {
+		t.Errorf("spec.cortex.hostCandidates = %+v, want the seeded compute-9", got.Spec.Cortex.HostCandidates)
+	}
 }
 
 func TestController_Reconcile_syncsFlavorOntoExistingVM(t *testing.T) {

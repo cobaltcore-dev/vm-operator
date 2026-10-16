@@ -10,6 +10,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
@@ -89,6 +90,22 @@ func TestPatchInto_preservesLastSyncTime(t *testing.T) {
 
 	if vm.Status.Nova.LastSyncTime != ts {
 		t.Error("PatchInto must preserve LastSyncTime (Reconcile owns it)")
+	}
+}
+
+// TestPatchInto_preservesCortex locks in that the Nova sync never clobbers the
+// Cortex subspec, which the Cortex placement API owns.
+func TestPatchInto_preservesCortex(t *testing.T) {
+	cortex := &v1alpha1.CortexSpec{
+		HostCandidates: []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-1"}},
+	}
+	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: "a"}}
+	vm.Spec.Cortex = cortex
+
+	mustConvert(t, fullServer(), qemuFlavor("flavor-uuid", 1, 1)).PatchInto(vm)
+
+	if vm.Spec.Cortex != cortex {
+		t.Errorf("PatchInto must not touch Spec.Cortex: got %+v", vm.Spec.Cortex)
 	}
 }
 
