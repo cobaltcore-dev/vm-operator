@@ -251,6 +251,13 @@ func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]se
 
 // FetchServer returns the current state of a single Nova server by uuid.
 //
+// TODO(investigate): the detailed list endpoint excludes deleted servers by
+// default, so a server Nova has marked DELETED returns (nil, false, nil) here
+// and is misread by the sync controller as "gone" (routing it to the
+// GarbageCollector's OrphanTTL path) rather than surfacing status=DELETED so it
+// takes the DeletionTTL deferred-deletion path. Investigate requesting
+// deleted=true / changes-since so a DELETED server's status can be reported.
+//
 // It does NOT use the member endpoint GET /servers/{id}: that call is scoped to
 // the token's project, and its only cross-project lever, all_tenants, is not a
 // valid parameter there so Nova silently ignores it — a server owned by another

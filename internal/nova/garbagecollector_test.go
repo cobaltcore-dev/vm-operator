@@ -10,6 +10,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -169,6 +170,91 @@ func TestGarbageCollector_keepsFreshOrphan(t *testing.T) {
 	var got v1alpha1.VirtualMachine
 	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, &got); err != nil {
 		t.Errorf("fresh orphan should survive, got err=%v", err)
+	}
+}
+
+// A server that is gone from Nova (NovaSynced=True/ServerGone) but still carries
+// its last-known Nova data is pruned once past the orphan TTL — the retained data
+// no longer blocks pruning; the condition drives it.
+func TestGarbageCollector_prunesGoneServerPastOrphanTTL(t *testing.T) {
+	const name = testVMUUID
+
+	scheme := newTestScheme(t)
+	// Retains last-known Nova data (Status ACTIVE), yet is marked gone.
+	vm := seedVM(name, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1"})
+	vm.CreationTimestamp = metav1.NewTime(time.Now().Add(-24 * time.Hour))
+	meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
+		Type:   v1alpha1.ConditionTypeNovaSynced,
+		Status: metav1.ConditionTrue,
+		Reason: v1alpha1.ConditionReasonNovaSyncedGone,
+	})
+	c := &GarbageCollector{Client: newTestClient(t, scheme, vm), Scheme: scheme}
+
+	res, err := c.Reconcile(context.Background(), request())
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("expected immediate prune (no requeue), got %v", res.RequeueAfter)
+	}
+	assertDeleted(t, c.Client, name)
+}
+
+// A server marked gone but still within the orphan TTL survives and is requeued.
+func TestGarbageCollector_keepsGoneServerWithinOrphanTTL(t *testing.T) {
+	const name = testVMUUID
+
+	scheme := newTestScheme(t)
+	vm := seedVM(name, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1"})
+	vm.CreationTimestamp = metav1.Now()
+	meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
+		Type:   v1alpha1.ConditionTypeNovaSynced,
+		Status: metav1.ConditionTrue,
+		Reason: v1alpha1.ConditionReasonNovaSyncedGone,
+	})
+	c := &GarbageCollector{Client: newTestClient(t, scheme, vm), Scheme: scheme}
+
+	res, err := c.Reconcile(context.Background(), request())
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	if res.RequeueAfter <= 0 || res.RequeueAfter > DefaultOrphanTTL {
+		t.Errorf("gone server within TTL should requeue within the orphan TTL, got %v", res.RequeueAfter)
+	}
+	var got v1alpha1.VirtualMachine
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, &got); err != nil {
+		t.Errorf("gone server within TTL should survive, got err=%v", err)
+	}
+}
+
+// A VM whose last sync FAILED (NovaSynced=False/SyncError) is never pruned,
+// regardless of age: Nova's view is unknown, so the server may still exist. This
+// is the API-outage safety property — a 401/503 must not cascade into deletion.
+func TestGarbageCollector_neverPrunesWhenSyncFailing(t *testing.T) {
+	const name = testVMUUID
+
+	scheme := newTestScheme(t)
+	vm := seedVM(name, &servers.Server{ID: name, Status: "ACTIVE", Host: "compute-1"})
+	// Ancient — well past any TTL — yet must survive because sync is failing.
+	vm.CreationTimestamp = metav1.NewTime(time.Now().Add(-240 * time.Hour))
+	meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
+		Type:    v1alpha1.ConditionTypeNovaSynced,
+		Status:  metav1.ConditionFalse,
+		Reason:  v1alpha1.ConditionReasonNovaSyncedError,
+		Message: "nova unreachable",
+	})
+	c := &GarbageCollector{Client: newTestClient(t, scheme, vm), Scheme: scheme}
+
+	res, err := c.Reconcile(context.Background(), request())
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("failing-sync VM should not be requeued by the GC, got %v", res.RequeueAfter)
+	}
+	var got v1alpha1.VirtualMachine
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, &got); err != nil {
+		t.Errorf("failing-sync VM must survive regardless of age, got err=%v", err)
 	}
 }
 

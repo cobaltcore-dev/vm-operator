@@ -42,7 +42,8 @@ const DefaultInterval = 5 * time.Minute
 // no per-server Nova calls — it diffs a single bulk listing.
 //
 // Reconcile never deletes resources; pruning is GarbageCollector's job. It only
-// records Nova's view, including clearing the Nova fields when the server is gone.
+// records Nova's view, including marking the server gone (via the NovaSynced
+// condition) while retaining the last-known Nova fields.
 //
 // RBAC (templated by hand in dist/templates/rbac.yaml):
 //   - cobaltcore.cloud/virtualmachines: get;list;watch;create;update;patch;delete
@@ -76,7 +77,7 @@ type Controller struct {
 //
 //	           │ in Nova              │ not in Nova
 //	───────────┼──────────────────────┼─────────────────────
-//	 in k8s    │ unchanged: noop      │ clear the Nova fields
+//	 in k8s    │ unchanged: noop      │ mark gone (retain fields)
 //	           │ changed: patch       │
 //	───────────┼──────────────────────┼─────────────────────
 //	 not in k8s│ create (may skip)    │ noop
@@ -204,9 +205,11 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 
-	// Case: k8s has the resource — patch Nova's view onto it (inNova), or clear the
-	// Nova fields when the server is gone. LastSyncTime, conditions and Status.Host
-	// are preserved either way.
+	// Case: k8s has the resource — patch Nova's view onto it (inNova), or mark the
+	// server gone when Nova no longer knows it. The last-known Nova spec/status is
+	// retained in both cases (the gone transition is recorded only via the
+	// NovaSynced condition, so operators can still see what the VM was). LastSyncTime,
+	// conditions and Status.Host are preserved either way.
 	base := vm.DeepCopy()
 	reason, message := v1alpha1.ConditionReasonNovaSyncedUpToDate, "resource reflects the current nova state"
 	outcome := outcomeSynced
@@ -215,17 +218,14 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		changed = conv.HasChanged(&vm)
 		conv.PatchInto(&vm)
 	} else {
-		var lastSync *metav1.Time
-		var status string
-		if vm.Status.Nova != nil {
-			lastSync = vm.Status.Nova.LastSyncTime
-			status = vm.Status.Nova.Status
-		}
-		changed = !equality.Semantic.DeepEqual(vm.Spec.Nova, v1alpha1.NovaSpec{}) || status != ""
-		vm.Spec.Nova = v1alpha1.NovaSpec{}
-		vm.Status.Nova = &v1alpha1.NovaStatus{LastSyncTime: lastSync}
-		reason, message = v1alpha1.ConditionReasonNovaSyncedGone, "nova no longer knows this server; nova fields cleared"
-		outcome = outcomeCleared
+		// The server is gone from Nova. We keep the last-known Nova fields intact;
+		// the transition is signalled purely by flipping the NovaSynced condition to
+		// ServerGone. So there is no data change here — the write (if any) is driven
+		// by the conditionChanged check below, making repeated reconciles of a
+		// stably-gone server a no-op.
+		changed = false
+		reason, message = v1alpha1.ConditionReasonNovaSyncedGone, "nova no longer knows this server; last-known nova state retained"
+		outcome = outcomeGone
 	}
 	meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
 		Type:    v1alpha1.ConditionTypeNovaSynced,

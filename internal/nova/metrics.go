@@ -23,7 +23,7 @@ const metricPrefix = "vm_operator_nova_"
 const (
 	outcomeSynced  = "synced"  // existing resource synced to a live server
 	outcomeCreated = "created" // resource created from a server Nova knows
-	outcomeCleared = "cleared" // resource's Nova fields cleared (server gone)
+	outcomeGone    = "gone"    // server gone from nova; last-known state retained
 	outcomeNoop    = "noop"    // neither side had the server; nothing to do
 	outcomeError   = "error"   // reconcile returned an error
 )
