@@ -18,11 +18,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	v1alpha1 "github.com/cobaltcore-dev/vm-operator/api/v1alpha1"
@@ -34,6 +36,16 @@ const MinInterval = time.Second
 // DefaultInterval is the poll interval used when none (or a non-positive one) is
 // configured; it is also the --nova-sync-interval flag default (see cmd/main.go).
 const DefaultInterval = 5 * time.Minute
+
+// requeueBase and requeueCap bound the exponential backoff Reconcile uses when a
+// server is gone from Nova (requeued via RequeueAfter so we notice if it returns,
+// until GarbageCollector prunes it). The delay grows ~2x with how long the
+// resource has existed, capped at requeueCap so the poll loop stays the backstop
+// and the per-item workqueue never grows unbounded.
+const (
+	requeueBase = 5 * time.Second
+	requeueCap  = DefaultInterval
+)
 
 // Controller keeps VirtualMachine resources in sync with the Nova servers they
 // mirror. A periodic poll loop (Start) decides *which* resources are out of sync
@@ -77,26 +89,54 @@ type Controller struct {
 //
 //	           │ in Nova              │ not in Nova
 //	───────────┼──────────────────────┼─────────────────────
-//	 in k8s    │ unchanged: noop      │ mark gone (retain fields)
-//	           │ changed: patch       │
+//	 in k8s    │ unchanged: noop      │ mark gone (retain fields),
+//	           │ changed: patch       │ requeue with backoff
 //	───────────┼──────────────────────┼─────────────────────
 //	 not in k8s│ create (may skip)    │ noop
 //
-// On success it records NovaSynced=True; on a fetch error, NovaSynced=False, and
-// returns the error so the request is retried.
+// On success it records NovaSynced=True. A fetch error (also records
+// NovaSynced=False) is returned so controller-runtime requeues it with its
+// default backoff. An existing resource whose server Nova no longer knows (gone)
+// is requeued with exponential backoff via RequeueAfter rather than left to the
+// next poll tick. The other outcomes (no managed flavor, no availability zone
+// yet, neither side) are plain noops; the poll loop re-enqueues them when their
+// state changes.
 func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	start := time.Now()
 
-	// Fetch the server. A fetch error is retried (and recorded on the resource);
-	// a gone server (inNova == false) means Nova no longer knows it.
+	// Load the resource (if any) up front: both the gone-server requeue backoff
+	// (derived from its age) and the sync paths below need it.
+	var vm v1alpha1.VirtualMachine
+	getErr := c.Get(ctx, req.NamespacedName, &vm)
+	inK8s := getErr == nil
+	if getErr != nil && !apierrors.IsNotFound(getErr) {
+		c.Metrics.observeReconcile(outcomeError, start)
+		return ctrl.Result{}, fmt.Errorf("getting VirtualMachine %s: %w", req.Name, getErr)
+	}
+
+	// Exponential backoff for the gone-server requeue (the only RequeueAfter path):
+	// the delay grows ~2x with how long the resource has existed, capped at
+	// requeueCap so the poll loop stays the backstop and the per-item workqueue
+	// never grows unbounded. A gone server is always in k8s, so CreationTimestamp
+	// is populated here.
+	backoff := requeueBase
+	for age := time.Since(vm.CreationTimestamp.Time); backoff < requeueCap && backoff < age; {
+		backoff *= 2
+	}
+	if backoff > requeueCap {
+		backoff = requeueCap
+	}
+
+	// Fetch the server. A fetch error is recorded on the resource and returned so
+	// controller-runtime requeues it with its default backoff; a gone server
+	// (inNova == false) means Nova no longer knows it (requeued via RequeueAfter —
+	// we expect Nova to catch up, or GarbageCollector to prune on its TTL).
 	server, inNova, err := c.OpenStack.FetchServer(ctx, req.Name)
 	if err != nil {
 		err = fmt.Errorf("fetching nova server %s: %w", req.Name, err)
-		// Best-effort: record NovaSynced=False on the resource if it exists, then
-		// retry (the error is still returned to requeue).
-		var vm v1alpha1.VirtualMachine
-		if c.Get(ctx, req.NamespacedName, &vm) == nil {
+		// Best-effort: record NovaSynced=False on the resource if it exists.
+		if inK8s {
 			base := vm.DeepCopy()
 			meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
 				Type:    v1alpha1.ConditionTypeNovaSynced,
@@ -110,14 +150,6 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		c.Metrics.observeReconcile(outcomeError, start)
 		return ctrl.Result{}, err
-	}
-
-	var vm v1alpha1.VirtualMachine
-	getErr := c.Get(ctx, req.NamespacedName, &vm)
-	inK8s := getErr == nil
-	if getErr != nil && !apierrors.IsNotFound(getErr) {
-		c.Metrics.observeReconcile(outcomeError, start)
-		return ctrl.Result{}, fmt.Errorf("getting VirtualMachine %s: %w", req.Name, getErr)
 	}
 
 	log.V(1).Info("reconciling nova server", "name", req.Name, "inNova", inNova, "inK8s", inK8s)
@@ -151,6 +183,8 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		} else {
 			log.V(1).Info("nova server has no flavor id", "name", req.Name)
 		}
+		// A missing flavor id leaves flavor nil; ConvertToVirtualMachine then returns
+		// ErrUnmanagedHypervisorType, skipped as a noop below.
 		converted, convErr := ConvertToVirtualMachine(server, flavor, c.Region)
 		switch {
 		case errors.Is(convErr, ErrUnmanagedHypervisorType):
@@ -213,6 +247,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	base := vm.DeepCopy()
 	reason, message := v1alpha1.ConditionReasonNovaSyncedUpToDate, "resource reflects the current nova state"
 	outcome := outcomeSynced
+	var requeueAfter time.Duration
 	var changed bool
 	if inNova {
 		changed = conv.HasChanged(&vm)
@@ -226,6 +261,10 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		changed = false
 		reason, message = v1alpha1.ConditionReasonNovaSyncedGone, "nova no longer knows this server; last-known nova state retained"
 		outcome = outcomeGone
+		// Gone is an expected (non-error) state: requeue with backoff so we notice
+		// if Nova brings the server back, until GarbageCollector prunes it.
+		requeueAfter = backoff
+		log.V(1).Info("requeueing gone server", "name", req.Name, "requeueAfter", requeueAfter)
 	}
 	meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
 		Type:    v1alpha1.ConditionTypeNovaSynced,
@@ -244,7 +283,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			(oldCond.Status != newCond.Status || oldCond.Reason != newCond.Reason || oldCond.Message != newCond.Message))
 	if !changed && !conditionChanged {
 		c.Metrics.observeReconcile(outcome, start)
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	if vm.Status.Nova == nil {
 		vm.Status.Nova = &v1alpha1.NovaStatus{}
@@ -271,7 +310,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	log.V(1).Info("synced VirtualMachine with nova", "name", req.Name, "serverFound", inNova)
 	c.Metrics.observeReconcile(outcome, start)
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // Start runs the periodic poll loop until ctx is cancelled. It implements
@@ -401,9 +440,17 @@ func (c *Controller) poll(ctx context.Context, log logr.Logger) {
 // SetupWithManager wires the periodic poll loop into the manager and registers
 // the reconciler to consume the uuids it enqueues.
 //
-// There is no For(&VirtualMachine{}) watch: this controller is driven solely by
-// the eventCh raw source fed by the poll loop. Watch-driven reconciliation of
-// the CRD (e.g. pruning) is handled by GarbageCollector.
+// Two event sources feed the one reconciler:
+//   - the eventCh raw source fed by the poll loop (the bulk-diff driver);
+//   - a watch on VirtualMachine objects, predicated to fire only for a resource
+//     that has never recorded a NovaSynced condition — i.e. created/updated but
+//     with no Nova information yet (e.g. a Cortex-created VM awaiting its first
+//     sync). This picks such resources up promptly instead of waiting for the
+//     next poll tick. A synced resource (condition present) never re-triggers the
+//     watch, so the reconciler's own status writes do not loop.
+//
+// Both sources enqueue the same request key per uuid, so the workqueue coalesces
+// duplicates. Watch-driven pruning of the CRD is handled by GarbageCollector.
 func (c *Controller) SetupWithManager(mgr manager.Manager) error {
 	if mgr == nil {
 		return errors.New("nil manager")
@@ -421,5 +468,26 @@ func (c *Controller) SetupWithManager(mgr manager.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("nova").
 		WatchesRawSource(src).
+		Watches(&v1alpha1.VirtualMachine{},
+			&handler.EnqueueRequestForObject{},
+			// Fire only for a VirtualMachine that has never recorded a NovaSynced
+			// condition (created/updated but no nova info yet). A synced resource
+			// (True), a gone resource (True/ServerGone) and a failed sync (False,
+			// which Reconcile already requeues with backoff) are all dropped, so
+			// the reconciler's own status writes never re-trigger the watch. Delete
+			// is GarbageCollector's job; Generic arrives via the raw source above.
+			// The checks are in-memory only, so they cannot block the workqueue.
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc: func(e event.CreateEvent) bool {
+					vm, ok := e.Object.(*v1alpha1.VirtualMachine)
+					return ok && meta.FindStatusCondition(vm.Status.Conditions, v1alpha1.ConditionTypeNovaSynced) == nil
+				},
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					vm, ok := e.ObjectNew.(*v1alpha1.VirtualMachine)
+					return ok && meta.FindStatusCondition(vm.Status.Conditions, v1alpha1.ConditionTypeNovaSynced) == nil
+				},
+				DeleteFunc:  func(event.DeleteEvent) bool { return false },
+				GenericFunc: func(event.GenericEvent) bool { return false },
+			})).
 		Complete(c)
 }

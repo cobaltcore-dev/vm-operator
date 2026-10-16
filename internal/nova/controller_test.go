@@ -368,19 +368,24 @@ func TestController_Reconcile_skipsCreateWithoutAZ(t *testing.T) {
 		Scheme: scheme,
 		Region: "qa-de-1",
 		// Server has no availability zone yet (e.g. not scheduled); we cannot
-		// derive a valid az, so creation must be skipped (not errored).
+		// derive a valid az, so creation must be skipped (not errored, not requeued
+		// — the poll loop re-enqueues when the AZ appears).
 		OpenStack: &fakeOpenStackClient{
 			result:  []servers.Server{{ID: testVMUUID, Status: "BUILD", Flavor: map[string]any{"id": "flavor-uuid"}}},
 			flavors: map[string]*flavors.Flavor{"flavor-uuid": qemuFlavor("flavor-uuid", 4, 8192)},
 		},
 	}
 
-	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+	res, err := c.Reconcile(context.Background(), request())
+	if err != nil {
 		t.Fatalf("Reconcile should not error when AZ is missing, got: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("expected no requeue for a missing-AZ skip, got %v", res.RequeueAfter)
 	}
 
 	var vm v1alpha1.VirtualMachine
-	err := c.Get(context.Background(), types.NamespacedName{Name: testVMUUID}, &vm)
+	err = c.Get(context.Background(), types.NamespacedName{Name: testVMUUID}, &vm)
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("expected no VM to be created without an AZ, got err=%v", err)
 	}
@@ -491,8 +496,14 @@ func TestController_Reconcile_marksServerGone(t *testing.T) {
 		OpenStack: &fakeOpenStackClient{result: nil}, // server not in Nova
 	}
 
-	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+	res, err := c.Reconcile(context.Background(), request())
+	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
+	}
+	// A gone server is requeued with backoff (we expect Nova to catch up, or the
+	// GarbageCollector to prune it on its TTL).
+	if res.RequeueAfter <= 0 {
+		t.Errorf("expected a positive RequeueAfter for a gone server, got %v", res.RequeueAfter)
 	}
 
 	got := getVM(t, c)
@@ -551,7 +562,7 @@ func TestController_Reconcile_recordsFetchFailure(t *testing.T) {
 
 	_, err := c.Reconcile(context.Background(), request())
 	if err == nil {
-		t.Fatal("expected Reconcile to return the fetch error for retry")
+		t.Fatal("expected Reconcile to return the fetch error so controller-runtime requeues it")
 	}
 
 	got := getVM(t, c)
@@ -568,8 +579,14 @@ func TestController_Reconcile_bothMissingIsNoop(t *testing.T) {
 		OpenStack: &fakeOpenStackClient{result: nil},
 	}
 
-	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+	// Nova has no such server and there is no resource to mark gone: nothing to
+	// act on, so this is a plain noop (no requeue, no create).
+	res, err := c.Reconcile(context.Background(), request())
+	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("expected no requeue when neither side has the server, got %v", res.RequeueAfter)
 	}
 	var got v1alpha1.VirtualMachine
 	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, &got); !apierrors.IsNotFound(err) {
