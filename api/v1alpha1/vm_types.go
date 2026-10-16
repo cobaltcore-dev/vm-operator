@@ -420,8 +420,7 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:selectablefield:JSONPath=".spec.az"
 // +kubebuilder:selectablefield:JSONPath=".spec.targetHost.name"
 // +kubebuilder:selectablefield:JSONPath=".status.host.name"
-// Default columns.
-// +kubebuilder:printcolumn:JSONPath=".metadata.name",name="UUID",type="string"
+// Default columns. The implicit NAME column already holds the Nova instance UUID.
 // +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.cpu",name="CPU",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.memory",name="Memory",type="string"

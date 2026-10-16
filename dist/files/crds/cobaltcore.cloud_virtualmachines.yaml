@@ -17,9 +17,6 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .metadata.name
-      name: UUID
-      type: string
     - jsonPath: .spec.az
       name: AZ
       type: string
