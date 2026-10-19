@@ -172,6 +172,76 @@ func TestFetchServers_sendsAuthAndMicroversionHeaders(t *testing.T) {
 	}
 }
 
+// TestFetchServers_reauthenticatesOn401 pins the fix for the silent-token-expiry
+// bug: because the server-page requests are dispatched with the plain HTTPClient
+// (bypassing gophercloud's ServiceClient.Request, where its 401 reauth lives),
+// FetchServers must do the reauth-and-retry itself. Here the fake Nova rejects
+// the stale token with a 401, the ReauthFunc installed on the provider mints a
+// fresh one, and the retry must carry that fresh token and succeed.
+func TestFetchServers_reauthenticatesOn401(t *testing.T) {
+	var sawTokens []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := r.Header.Get("X-Auth-Token")
+		sawTokens = append(sawTokens, tok)
+		if tok != "fresh-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(t, w, `{"servers":[{"id":"a","status":"ACTIVE"}]}`)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "stale-token", "")
+	// Mirror the production wiring that openstack.Authenticate installs for an
+	// AllowReauth client: a token lock plus a ReauthFunc that mints a new token.
+	var reauths int
+	client.compute.UseTokenLock()
+	client.compute.ReauthFunc = func(context.Context) error {
+		reauths++
+		client.compute.SetToken("fresh-token")
+		return nil
+	}
+
+	got, err := client.FetchServers(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reauths != 1 {
+		t.Errorf("ReauthFunc called %d times, want exactly 1", reauths)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("servers = %+v, want the single server returned after reauth", got)
+	}
+	want := []string{"stale-token", "fresh-token"}
+	if len(sawTokens) != len(want) || sawTokens[0] != want[0] || sawTokens[1] != want[1] {
+		t.Errorf("tokens seen by server = %v, want %v (stale first, fresh on retry)", sawTokens, want)
+	}
+}
+
+// TestFetchServers_non401ErrorDoesNotReauth makes sure the reauth path is scoped
+// to 401 only: a 500 must surface as an error without burning a reauth.
+func TestFetchServers_non401ErrorDoesNotReauth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	var reauths int
+	client.compute.UseTokenLock()
+	client.compute.ReauthFunc = func(context.Context) error {
+		reauths++
+		return nil
+	}
+
+	if _, err := client.FetchServers(context.Background()); err == nil {
+		t.Fatal("expected an error for a 500 response")
+	}
+	if reauths != 0 {
+		t.Errorf("ReauthFunc called %d times for a 500, want 0", reauths)
+	}
+}
+
 func TestFetchServers_omitsMicroversionHeaderWhenUnset(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := r.Header["X-Openstack-Nova-Api-Version"]; ok {

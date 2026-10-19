@@ -206,21 +206,41 @@ func (c *openStackClient) FetchServers(ctx context.Context) ([]servers.Server, e
 // listing at url, returning the servers on that page and the URL of the next
 // page (nil when url is the last page). The response body is read and closed
 // before returning so no per-page state outlives the call.
+//
+// Because the request is dispatched with the plain HTTPClient rather than
+// through gophercloud's ServiceClient.Request, gophercloud's own reauth-on-401
+// handling (which only runs inside ProviderClient.doRequest) never fires here.
+// AllowReauth on its own does nothing for this path: it merely installs a
+// ReauthFunc that doRequest would have called. We therefore replicate that
+// handling ourselves — on a 401 we reauthenticate once (passing the token we
+// just used, so concurrent callers coalesce into a single reauth instead of
+// stampeding Keystone) and retry with the fresh token. Without this the token
+// cached at client creation is used forever and expires silently: FetchServers
+// is the hot poll path and may never make a gophercloud-backed call (only the
+// flavor fetches go through gophercloud) that would otherwise trigger a renew.
 func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]servers.Server, *string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-	if err != nil {
-		return nil, nil, fmt.Errorf("building nova servers request: %w", err)
-	}
-	req.Header.Set("X-Auth-Token", c.compute.Token())
-	if c.compute.Microversion != "" {
-		req.Header.Set("X-OpenStack-Nova-API-Version", c.compute.Microversion)
-	}
-
-	resp, err := c.compute.HTTPClient.Do(req)
+	resp, err := c.doServerPageRequest(ctx, url)
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing nova servers: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Our token has (probably) expired. Reauthenticate and retry once. We
+		// pass the token we just tried as the "previous" token: if another
+		// goroutine already refreshed it in the meantime, Reauthenticate skips
+		// the Keystone round-trip and we simply retry with the newer token.
+		resp.Body.Close()
+		if err := c.compute.Reauthenticate(ctx, c.compute.Token()); err != nil {
+			return nil, nil, fmt.Errorf("reauthenticating with openstack: %w", err)
+		}
+		resp, err = c.doServerPageRequest(ctx, url)
+		if err != nil {
+			return nil, nil, fmt.Errorf("listing nova servers after reauth: %w", err)
+		}
+		defer resp.Body.Close()
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil, fmt.Errorf("listing nova servers: unexpected status code %d", resp.StatusCode)
 	}
@@ -247,6 +267,22 @@ func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]se
 		}
 	}
 	return list.Servers, next, nil
+}
+
+// doServerPageRequest builds and dispatches a single GET for a server-listing
+// page, stamping the request with the current auth token at call time. It is
+// called once per attempt so that a retry after reauthentication picks up the
+// freshly issued token rather than the one that just 401'd.
+func (c *openStackClient) doServerPageRequest(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("building nova servers request: %w", err)
+	}
+	req.Header.Set("X-Auth-Token", c.compute.Token())
+	if c.compute.Microversion != "" {
+		req.Header.Set("X-OpenStack-Nova-API-Version", c.compute.Microversion)
+	}
+	return c.compute.HTTPClient.Do(req)
 }
 
 // FetchServer returns the current state of a single Nova server by uuid.
