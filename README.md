@@ -45,8 +45,13 @@ multicluster:
     apiservers:
       home:
         gvks:
+          # Both VirtualMachine and VirtualMachineList are maintained
+          # inside the vm-operator's home cluster (where it's deployed)
           - cobaltcore.cloud/v1alpha1/VirtualMachine
+          - cobaltcore.cloud/v1alpha1/VirtualMachineList
       remotes: []   # see values.yaml for the remote apiserver schema
+          # The remotes config can be used in case you wish these
+          # resources to be maintained in other cluster(s).
 ```
 
 Each remote apiserver must accept the manager ServiceAccount's tokens
