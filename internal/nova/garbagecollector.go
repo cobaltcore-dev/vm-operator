@@ -60,13 +60,17 @@ const (
 //     VM is marked for deletion DeletionTTL into the future (Status.DeletionTime)
 //     and only removed once that window elapses. If Nova reports the server live
 //     again before then, the mark is cleared and the VM survives.
-//   - The server is not in Nova (the NovaSynced condition is True with reason
-//     ServerGone) or the VM has never synced at all, and it is older than
-//     OrphanTTL. The age gate (measured from creation) grants a freshly created,
-//     not-yet-synced resource the full TTL before it becomes eligible, so pruning
-//     never races the sync controller. A VM whose last sync FAILED (NovaSynced
-//     False) is never pruned: Nova's view is unknown, so the server may still
-//     exist.
+//   - A sync has positively confirmed the server is gone from Nova (the
+//     NovaSynced condition is True with reason ServerGone) and the resource is
+//     older than OrphanTTL. The age gate (measured from creation) grants a freshly
+//     created resource the full TTL before it becomes eligible, so pruning never
+//     races the sync controller. A VM whose last sync FAILED (NovaSynced False) is
+//     never pruned: Nova's view is unknown, so the server may still exist. A VM
+//     that has never synced at all (no NovaSynced condition) is likewise never
+//     pruned: the absence of a confirmation is not evidence the server is gone —
+//     deletion always requires a positive ServerGone, never merely the lack of a
+//     sync result. Such a resource is kept and requeued until the sync controller
+//     records an outcome.
 //
 // It is intentionally separate from Controller: the sync controller only
 // records Nova's view (including marking a server gone while retaining its
@@ -103,11 +107,12 @@ type GarbageCollector struct {
 
 // Reconcile prunes a VirtualMachine under one of two time-gated conditions: a
 // Nova-reported DELETED server (after a deferred DeletionTTL grace window) or a
-// resource that is not in Nova — gone (NovaSynced True/ServerGone) or never
-// synced — that has outlived OrphanTTL. Every other state — including a freshly
-// created or not-yet-synced resource within its grace period, or one whose last
-// sync failed (NovaSynced False, Nova's view unknown) — is left untouched and
-// requeued for re-evaluation when it next becomes eligible.
+// resource a sync has positively confirmed gone from Nova (NovaSynced
+// True/ServerGone) that has outlived OrphanTTL. Every other state — a freshly
+// created or never-synced resource (no evidence its server is gone), one within
+// its grace period, or one whose last sync failed (NovaSynced False, Nova's view
+// unknown) — is left untouched and requeued for re-evaluation when it next
+// becomes eligible.
 func (c *GarbageCollector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -191,11 +196,15 @@ func (c *GarbageCollector) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	//     OrphanTTL clock (measured from creation), which also covers a server that
 	//     Cortex created but Nova has not yet persisted, or one deleted straight
 	//     from the Nova DB.
-	//   - absent condition: fall back to the Nova status for the pre-condition
-	//     "not yet synced" case — a freshly created resource with no Nova status at
-	//     all. Pruned on the same OrphanTTL clock so pruning never races the sync
-	//     controller. (A resource that already carries Nova status but no condition
-	//     is left alone; the next sync will set the condition.)
+	//   - absent condition ("not yet synced"): a freshly created resource no
+	//     successful sync has ever confirmed against Nova. We do NOT prune it — a
+	//     missing condition is the absence of evidence, not evidence the server is
+	//     gone, and the server may well exist in Nova while the sync is merely
+	//     pending or has never been attempted. Only a positive ServerGone (a
+	//     succeeded sync that observed the server absent) ever authorises an orphan
+	//     prune. Such a resource is requeued on the OrphanTTL clock so it stays a
+	//     visible, re-evaluated candidate until the sync controller records an
+	//     outcome.
 	synced := meta.FindStatusCondition(vm.Status.Conditions, v1alpha1.ConditionTypeNovaSynced)
 
 	// Last sync failed: Nova's view is unknown, so never prune. The sync
@@ -206,16 +215,17 @@ func (c *GarbageCollector) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	// Known-gone, or never synced: prune once the resource has outlived OrphanTTL
-	// (measured from creation), which grants a freshly created resource the full
-	// window to sync before it becomes eligible.
+	// Positively gone: a sync succeeded and Nova no longer knows the server. This
+	// is the ONLY condition under which an orphan prune is authorised — deletion
+	// requires evidence of absence, never merely its lack. Prune once the resource
+	// has outlived OrphanTTL (measured from creation), which grants a freshly
+	// created resource the full window before it becomes eligible.
 	goneFromNova := synced != nil && synced.Status == metav1.ConditionTrue &&
 		synced.Reason == v1alpha1.ConditionReasonNovaSyncedGone
-	notYetSynced := synced == nil && (vm.Status.Nova == nil || vm.Status.Nova.Status == "")
-	if goneFromNova || notYetSynced {
+	if goneFromNova {
 		age := now.Sub(vm.CreationTimestamp.Time)
 		if age >= orphanTTL {
-			log.Info("pruning VirtualMachine: not in nova past orphan TTL", "age", age, "goneFromNova", goneFromNova)
+			log.Info("pruning VirtualMachine: confirmed gone from nova past orphan TTL", "age", age)
 			if err := client.IgnoreNotFound(c.Delete(ctx, &vm)); err != nil {
 				c.Metrics.recordPrune(pruneOutcomeError)
 				return ctrl.Result{}, err
@@ -227,7 +237,24 @@ func (c *GarbageCollector) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// RequeueAfter is in-memory only; the Start re-enqueue loop is the durable
 		// backstop that re-arms it if the process restarts before it fires.
 		requeueAfter := orphanTTL - age
-		log.V(1).Info("not in nova but within orphan TTL, requeueing", "age", age, "requeueAfter", requeueAfter)
+		log.V(1).Info("gone from nova but within orphan TTL, requeueing", "age", age, "requeueAfter", requeueAfter)
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
+	// Not yet synced (no condition, no live Nova status): a successful sync has
+	// never confirmed this resource against Nova, so we have no evidence its server
+	// is gone — it may exist while the sync is pending. Never prune; requeue on the
+	// OrphanTTL clock so it remains a re-evaluated candidate until the sync
+	// controller records an outcome (ServerGone, which authorises the prune above,
+	// or SyncError / UpToDate, both handled earlier).
+	notYetSynced := synced == nil && (vm.Status.Nova == nil || vm.Status.Nova.Status == "")
+	if notYetSynced {
+		age := now.Sub(vm.CreationTimestamp.Time)
+		requeueAfter := orphanTTL - age
+		if requeueAfter <= 0 {
+			requeueAfter = orphanTTL
+		}
+		log.V(1).Info("not yet synced; no evidence server is gone, keeping and requeueing", "age", age, "requeueAfter", requeueAfter)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 

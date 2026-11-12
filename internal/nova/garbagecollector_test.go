@@ -132,12 +132,19 @@ func TestGarbageCollector_cancelsDeletionWhenServerReturns(t *testing.T) {
 }
 
 // A resource carrying no Nova status that has outlived the orphan TTL is pruned.
-func TestGarbageCollector_prunesOldOrphan(t *testing.T) {
+// A never-synced resource is NOT pruned on age alone, no matter how old: a
+// missing NovaSynced condition is the absence of evidence, not evidence the
+// server is gone. The server may well still exist in Nova while the sync is
+// pending or has never been attempted. It must survive and be requeued until a
+// successful sync records an outcome. This is the core protection against
+// deleting a resource whose Nova server still exists.
+func TestGarbageCollector_keepsNeverSyncedVM(t *testing.T) {
 	const name = testVMUUID
 
 	scheme := newTestScheme(t)
 	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	// No Nova status at all, created well beyond the orphan TTL.
+	// No Nova status and no NovaSynced condition, created well beyond the orphan
+	// TTL — yet it must survive because nothing has confirmed the server is gone.
 	vm.CreationTimestamp = metav1.NewTime(time.Now().Add(-24 * time.Hour))
 	c := &GarbageCollector{Client: newTestClient(t, scheme, vm), Scheme: scheme}
 
@@ -145,10 +152,13 @@ func TestGarbageCollector_prunesOldOrphan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
-	if res.RequeueAfter != 0 {
-		t.Errorf("expected immediate prune (no requeue), got %v", res.RequeueAfter)
+	if res.RequeueAfter <= 0 {
+		t.Errorf("never-synced VM should be requeued, not pruned, got RequeueAfter=%v", res.RequeueAfter)
 	}
-	assertDeleted(t, c.Client, name)
+	var got v1alpha1.VirtualMachine
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, &got); err != nil {
+		t.Errorf("never-synced VM must survive regardless of age, got err=%v", err)
+	}
 }
 
 // A freshly created resource with no Nova status must survive: the empty status
