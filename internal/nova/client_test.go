@@ -5,6 +5,7 @@ package nova
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,6 +54,7 @@ func newTestOpenStackClient(srv *httptest.Server, token, microversion string) *o
 	compute := &gophercloud.ServiceClient{
 		ProviderClient: provider,
 		Endpoint:       srv.URL + "/",
+		Type:           "compute",
 		Microversion:   microversion,
 	}
 	return &openStackClient{compute: compute}
@@ -300,19 +302,18 @@ func TestFetchServers_contextCancelled(t *testing.T) {
 	}
 }
 
-func TestFetchServer_requestsAllTenantsAndUUIDFilter(t *testing.T) {
+func TestFetchServer_requestsMemberEndpoint(t *testing.T) {
+	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// FetchServer must query the list endpoint (not the project-scoped member
-		// GET) with the admin all_tenants + uuid filter, so a server owned by another
-		// project is still returned.
-		if got := r.URL.Path; got != "/servers/detail" {
-			t.Errorf("path = %q, want /servers/detail", got)
+		requests++
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if got := r.URL.Query().Get("all_tenants"); got != "true" {
-			t.Errorf("all_tenants = %q, want \"true\"", got)
+		if got := r.URL.Path; got != "/servers/"+testVMUUID {
+			t.Errorf("path = %q, want /servers/%s", got, testVMUUID)
 		}
-		if got := r.URL.Query().Get("uuid"); got != "a" {
-			t.Errorf("uuid = %q, want \"a\"", got)
+		if r.URL.RawQuery != "" {
+			t.Errorf("unexpected query parameters: %q", r.URL.RawQuery)
 		}
 		if got := r.Header.Get("X-Auth-Token"); got != "tok" {
 			t.Errorf("X-Auth-Token = %q, want \"tok\"", got)
@@ -320,70 +321,74 @@ func TestFetchServer_requestsAllTenantsAndUUIDFilter(t *testing.T) {
 		if got := r.Header.Get("X-OpenStack-Nova-API-Version"); got != "2.66" {
 			t.Errorf("microversion header = %q, want \"2.66\"", got)
 		}
-		writeJSON(t, w, `{"servers":[{"id":"a","status":"ACTIVE"}]}`)
+		writeJSON(t, w, `{"server":{"id":"`+testVMUUID+`","status":"ACTIVE","tenant_id":"other-project","flavor":{"id":"f"},"OS-EXT-SRV-ATTR:host":"compute-1","OS-EXT-SRV-ATTR:instance_name":"instance-1","OS-EXT-AZ:availability_zone":"az-1"}}`)
 	}))
 	defer srv.Close()
 
 	client := newTestOpenStackClient(srv, "tok", "2.66")
-	server, found, err := client.FetchServer(context.Background(), "a")
+	server, found, err := client.FetchServer(context.Background(), testVMUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !found {
 		t.Fatal("found = false, want true")
 	}
-	if server.ID != "a" || server.Status != "ACTIVE" {
-		t.Errorf("server = %+v, want id=a status=ACTIVE", server)
+	if requests != 1 {
+		t.Errorf("requests = %d, want 1", requests)
+	}
+	if server.ID != testVMUUID || server.Status != "ACTIVE" || server.TenantID != "other-project" ||
+		server.Flavor["id"] != "f" || server.Host != "compute-1" || server.InstanceName != "instance-1" || server.AvailabilityZone != "az-1" {
+		t.Errorf("server fields not preserved: %+v", server)
 	}
 }
 
-func TestFetchServer_emptyResultIsGone(t *testing.T) {
+func TestFetchServer_notFoundIsGone(t *testing.T) {
+	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// No matching server across any project: an empty list, not a 404.
-		writeJSON(t, w, `{"servers":[]}`)
+		requests++
+		if r.URL.Path != "/servers/missing" || r.URL.RawQuery != "" {
+			t.Errorf("unexpected request URL: %s", r.URL)
+		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	client := newTestOpenStackClient(srv, "tok", "")
 	server, found, err := client.FetchServer(context.Background(), "missing")
 	if err != nil {
-		t.Fatalf("an empty result must be reported as gone, not an error: %v", err)
+		t.Fatalf("a 404 must be reported as gone, not an error: %v", err)
 	}
 	if found || server != nil {
 		t.Errorf("got (found=%v, server=%+v), want (false, nil)", found, server)
 	}
-}
-
-func TestFetchServer_errorOnNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	client := newTestOpenStackClient(srv, "tok", "")
-	if _, _, err := client.FetchServer(context.Background(), "a"); err == nil {
-		t.Fatal("expected an error for a non-200 response")
+	if requests != 1 {
+		t.Errorf("requests = %d, want 1 (no list fallback)", requests)
 	}
 }
 
-// A server absent from the live listing but present as soft-deleted is surfaced
-// with status=DELETED, via a fallback query carrying the admin deleted toggle,
-// so the controller can route it to the deferred-deletion path.
-func TestFetchServer_fallsBackToDeletedServer(t *testing.T) {
+func TestFetchServer_errorOnNon200(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+
+			client := newTestOpenStackClient(srv, "tok", "")
+			server, found, err := client.FetchServer(context.Background(), "a")
+			if !gophercloud.ResponseCodeIs(err, status) {
+				t.Fatalf("error = %v, want HTTP %d", err, status)
+			}
+			if found || server != nil {
+				t.Errorf("got (found=%v, server=%+v), want (false, nil)", found, server)
+			}
+		})
+	}
+}
+
+func TestFetchServer_preservesDeletedStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("deleted") == "true" {
-			// Deleted lookup must still be the all_tenants + uuid admin query.
-			if got := r.URL.Query().Get("all_tenants"); got != "true" {
-				t.Errorf("deleted query all_tenants = %q, want \"true\"", got)
-			}
-			if got := r.URL.Query().Get("uuid"); got != "a" {
-				t.Errorf("deleted query uuid = %q, want \"a\"", got)
-			}
-			writeJSON(t, w, `{"servers":[{"id":"a","status":"DELETED"}]}`)
-			return
-		}
-		// Live lookup: not found.
-		writeJSON(t, w, `{"servers":[]}`)
+		writeJSON(t, w, `{"server":{"id":"a","status":"DELETED"}}`)
 	}))
 	defer srv.Close()
 
@@ -393,27 +398,37 @@ func TestFetchServer_fallsBackToDeletedServer(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !found {
-		t.Fatal("found = false, want true for a soft-deleted server")
+		t.Fatal("found = false, want true for a returned deleted server")
 	}
 	if server.ID != "a" || server.Status != "DELETED" {
 		t.Errorf("server = %+v, want id=a status=DELETED", server)
 	}
 }
 
-// When the server is live, the authoritative live lookup wins and the deleted
-// fallback is never issued.
-func TestFetchServer_prefersLiveOverDeleted(t *testing.T) {
+func TestFetchServer_reauthenticatesOn401(t *testing.T) {
+	var sawTokens []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("deleted") == "true" {
-			t.Error("deleted fallback must not run when the server is live")
-			writeJSON(t, w, `{"servers":[{"id":"a","status":"DELETED"}]}`)
+		if r.URL.Path != "/servers/a" || r.URL.RawQuery != "" {
+			t.Errorf("unexpected request URL: %s", r.URL)
+		}
+		token := r.Header.Get("X-Auth-Token")
+		sawTokens = append(sawTokens, token)
+		if token != "fresh-token" {
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeJSON(t, w, `{"servers":[{"id":"a","status":"ACTIVE"}]}`)
+		writeJSON(t, w, `{"server":{"id":"a","status":"ACTIVE"}}`)
 	}))
 	defer srv.Close()
 
-	client := newTestOpenStackClient(srv, "tok", "")
+	client := newTestOpenStackClient(srv, "stale-token", "")
+	var reauths int
+	client.compute.UseTokenLock()
+	client.compute.ReauthFunc = func(context.Context) error {
+		reauths++
+		client.compute.SetToken("fresh-token")
+		return nil
+	}
 	server, found, err := client.FetchServer(context.Background(), "a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -421,38 +436,34 @@ func TestFetchServer_prefersLiveOverDeleted(t *testing.T) {
 	if !found || server.Status != "ACTIVE" {
 		t.Errorf("got (found=%v, server=%+v), want (true, ACTIVE)", found, server)
 	}
-}
-
-// Absent from both the live and deleted listings: genuinely gone.
-func TestFetchServer_goneWhenAbsentFromBoth(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, `{"servers":[]}`)
-	}))
-	defer srv.Close()
-
-	client := newTestOpenStackClient(srv, "tok", "")
-	server, found, err := client.FetchServer(context.Background(), "missing")
-	if err != nil {
-		t.Fatalf("absence from both must be gone, not an error: %v", err)
-	}
-	if found || server != nil {
-		t.Errorf("got (found=%v, server=%+v), want (false, nil)", found, server)
+	if reauths != 1 || strings.Join(sawTokens, ",") != "stale-token,fresh-token" {
+		t.Errorf("reauths = %d, tokens = %v, want 1 reauth with stale then fresh token", reauths, sawTokens)
 	}
 }
 
-// A failure on the deleted fallback query is returned, not misreported as gone.
-func TestFetchServer_errorOnDeletedQueryNon200(t *testing.T) {
+func TestFetchServer_errorOnMalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("deleted") == "true" {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		writeJSON(t, w, `{"servers":[]}`)
+		writeJSON(t, w, `{"server": not json`)
 	}))
 	defer srv.Close()
 
 	client := newTestOpenStackClient(srv, "tok", "")
 	if _, _, err := client.FetchServer(context.Background(), "a"); err == nil {
-		t.Fatal("expected an error when the deleted fallback query fails")
+		t.Fatal("expected an error for a malformed response body")
+	}
+}
+
+func TestFetchServer_contextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, `{"server":{"id":"a"}}`)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := newTestOpenStackClient(srv, "tok", "")
+	if _, _, err := client.FetchServer(ctx, "a"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	neturl "net/url"
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
@@ -18,8 +17,8 @@ import (
 )
 
 // OpenStackClient abstracts the OpenStack Nova API as far as this controller
-// needs it: it lists the current Nova servers so the controller can reconcile
-// them against the VirtualMachine CRDs.
+// needs it: it lists the current Nova servers for polling and fetches individual
+// servers so the controller can reconcile them against the VirtualMachine CRDs.
 //
 // Servers are returned as gophercloud's own servers.Server; the controller
 // reads the fields it needs directly (ID, Status, OS-EXT-* extended
@@ -216,8 +215,8 @@ func (c *openStackClient) FetchServers(ctx context.Context) ([]servers.Server, e
 // just used, so concurrent callers coalesce into a single reauth instead of
 // stampeding Keystone) and retry with the fresh token. Without this the token
 // cached at client creation is used forever and expires silently: FetchServers
-// is the hot poll path and may never make a gophercloud-backed call (only the
-// flavor fetches go through gophercloud) that would otherwise trigger a renew.
+// is the hot poll path and cannot rely on a gophercloud-backed single-server or
+// flavor fetch to trigger a renew.
 func (c *openStackClient) fetchServerPage(ctx context.Context, url string) ([]servers.Server, *string, error) {
 	resp, err := c.doServerPageRequest(ctx, url)
 	if err != nil {
@@ -287,67 +286,20 @@ func (c *openStackClient) doServerPageRequest(ctx context.Context, url string) (
 
 // FetchServer returns the current state of a single Nova server by uuid.
 //
-// It queries in two steps. First a live lookup via the detailed list endpoint
-// (all_tenants=true + the uuid filter), which is authoritative when the server
-// still exists. If that is empty, it retries with the admin `deleted` toggle to
-// pick up a soft-deleted server: a DELETED server must be surfaced (with
-// status=DELETED) so the sync controller records it and the GarbageCollector
-// takes the deferred-deletion (DeletionTTL) path rather than treating it as an
-// orphan. An empty result from both means the server is genuinely gone,
-// reported as (nil, false, nil). A fetch error from either request is returned
-// (never silently treated as gone), so a transient Nova failure does not look
-// like a deletion.
-//
-// It does NOT use the member endpoint GET /servers/{id}: that call is scoped to
-// the token's project, and its only cross-project lever, all_tenants, is not a
-// valid parameter there so Nova silently ignores it — a server owned by another
-// project then 404s and is misread as "gone". The list endpoint with the
-// admin-only all_tenants + uuid filter returns the one matching server across
-// all projects, keeping the server shape identical to FetchServers.
+// It uses GET /servers/{uuid}; cross-project access depends on the technical
+// user's Nova policy permissions, not the list-only all_tenants parameter.
+// A 404 is reported as (nil, false, nil). Other failures are returned for retry
+// rather than mistaken for a deletion. Any returned DELETED status is preserved
+// so the controller can record it for GarbageCollector's deferred-deletion path.
 func (c *openStackClient) FetchServer(ctx context.Context, uuid string) (*servers.Server, bool, error) {
-	// Live lookup first — authoritative when the server still exists.
-	server, found, err := c.fetchServerByUUID(ctx, uuid, false)
+	server, err := servers.Get(ctx, c.compute, uuid).Extract()
+	if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
+		return nil, false, nil
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("getting nova server %s: %w", uuid, err)
 	}
-	if found {
-		return server, true, nil
-	}
-
-	// Not live: it may be soft-deleted. Surface a DELETED server so the regular
-	// deletion path (DeletionTTL) applies instead of the orphan path.
-	server, found, err = c.fetchServerByUUID(ctx, uuid, true)
-	if err != nil {
-		return nil, false, fmt.Errorf("getting deleted nova server %s: %w", uuid, err)
-	}
-	// Empty in both: genuinely gone.
-	return server, found, nil
-}
-
-// fetchServerByUUID queries the detailed list endpoint for a single server by
-// uuid across all projects. When deleted is true it asks Nova for soft-deleted
-// servers only (the admin-only `deleted` toggle, which replaces rather than
-// augments the live set); when false it returns live servers. It reuses
-// fetchServerPage so the server shape matches FetchServers, and reports a server
-// not present in the response as (nil, false, nil).
-func (c *openStackClient) fetchServerByUUID(ctx context.Context, uuid string, deleted bool) (*servers.Server, bool, error) {
-	// ResourceBaseURL ends with a "/", so this yields e.g.
-	// ".../compute/v2.1/servers/detail?all_tenants=true&uuid={uuid}".
-	url := c.compute.ResourceBaseURL() + "servers/detail?all_tenants=true&uuid=" + neturl.QueryEscape(uuid)
-	if deleted {
-		url += "&deleted=true"
-	}
-
-	page, _, err := c.fetchServerPage(ctx, url)
-	if err != nil {
-		return nil, false, err
-	}
-	for i := range page {
-		if page[i].ID == uuid {
-			return &page[i], true, nil
-		}
-	}
-	return nil, false, nil
+	return server, true, nil
 }
 
 // FetchFlavor returns the Nova flavor with the given id, including its extra
