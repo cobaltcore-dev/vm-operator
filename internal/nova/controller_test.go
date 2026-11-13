@@ -6,6 +6,8 @@ package nova
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -237,6 +239,47 @@ func TestController_poll_respectsContextCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("poll did not return after context cancellation")
 	}
+}
+
+func TestController_Reconcile_usesServerGet(t *testing.T) {
+	var serverGets int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.RawQuery != "" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		switch r.URL.Path {
+		case "/servers/" + testVMUUID:
+			serverGets++
+			writeJSON(t, w, `{"server":{"id":"`+testVMUUID+`","status":"ACTIVE","flavor":{"id":"f"},"OS-EXT-SRV-ATTR:host":"compute-1"}}`)
+		case "/flavors/f":
+			writeJSON(t, w, `{"flavor":{"id":"f","name":"f","vcpus":2,"ram":2048}}`)
+		case "/flavors/f/os-extra_specs":
+			writeJSON(t, w, `{"extra_specs":{"`+hypervisorTypeExtraSpec+`":"qemu"}}`)
+		default:
+			t.Errorf("unexpected endpoint (reconcile must not list servers): %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	scheme := newTestScheme(t)
+	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: testVMUUID}}
+	c := &Controller{
+		Client:    newTestClient(t, scheme, vm),
+		Scheme:    scheme,
+		OpenStack: newTestOpenStackClient(srv, "tok", ""),
+	}
+	if _, err := c.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	if serverGets != 1 {
+		t.Errorf("server GET requests = %d, want 1", serverGets)
+	}
+	got := getVM(t, c)
+	if got.Status.Nova == nil || got.Status.Nova.Status != "ACTIVE" || got.Status.Nova.Host != "compute-1" {
+		t.Errorf("status.nova = %+v, want ACTIVE on compute-1", got.Status.Nova)
+	}
+	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
 }
 
 func TestController_Reconcile_syncsExistingVM(t *testing.T) {

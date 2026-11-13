@@ -128,8 +128,9 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		backoff = requeueCap
 	}
 
-	// Fetch the server. A fetch error is recorded on the resource and returned so
-	// controller-runtime requeues it with its default backoff; a gone server
+	// Fetch the server via GET /servers/{uuid}, not a filtered bulk listing.
+	// A fetch error is recorded on the resource and returned so controller-runtime
+	// requeues it with its default backoff; a gone server
 	// (inNova == false) means Nova no longer knows it (requeued via RequeueAfter —
 	// we expect Nova to catch up, or GarbageCollector to prune on its TTL).
 	server, inNova, err := c.OpenStack.FetchServer(ctx, req.Name)
