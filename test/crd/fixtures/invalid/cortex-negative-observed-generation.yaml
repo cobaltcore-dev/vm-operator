@@ -20,4 +20,4 @@ spec:
     image:
       uuid: 22222222-2222-2222-2222-222222222222
   cortex:
-    observedGeneration: -1
+    scheduledGeneration: -1
