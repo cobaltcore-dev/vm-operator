@@ -26,7 +26,7 @@ spec:
     - jsonPath: .spec.resources.memory
       name: Memory
       type: string
-    - jsonPath: .spec.targetHost.name
+    - jsonPath: .metadata.labels.cobaltcore\.cloud/target-host
       name: TargetHost
       type: string
     - jsonPath: .status.host.name
@@ -89,7 +89,7 @@ spec:
               Region, AZ, and Resources are populated at creation time either by the Cortex
               placement API (at scheduling time) or by the vm-operator's Nova sync
               controller (when it adopts a pre-existing Nova server that has no CRD yet).
-              Both write the same create-time values; the fields are immutable thereafter.
+              Region and AZ are immutable thereafter; Resources may change on resize.
             properties:
               az:
                 description: |-
@@ -220,6 +220,17 @@ spec:
                       persisted nowhere inside the Nova database, so Cortex propagates
                       this information into the CortexSpec.
                     type: string
+                  lastTransitionTime:
+                    description: LastTransitionTime is the timestamp of the last transition
+                      of the VM's intent.
+                    format: date-time
+                    type: string
+                  observedGeneration:
+                    description: ObservedGeneration is the last generation observed
+                      by cortex for this VM.
+                    format: int64
+                    minimum: 0
+                    type: integer
                 type: object
               hypervisorType:
                 description: HypervisorType is the hypervisor type of the host where
@@ -287,9 +298,13 @@ spec:
                       name, used for logging and debugging only.
                     type: string
                   ownership:
-                    description: Ownership identifies the OpenStack project and user
-                      owning this VM.
+                    description: Ownership identifies the OpenStack project, user,
+                      and domain owning this VM.
                     properties:
+                      domain:
+                        description: Domain is the OpenStack domain UUID that owns
+                          the project, when known.
+                        type: string
                       project:
                         description: Project is the OpenStack project (tenant) UUID.
                         type: string
@@ -330,50 +345,6 @@ spec:
                 x-kubernetes-validations:
                 - message: both cpu and memory must be specified
                   rule: '"cpu" in self && "memory" in self'
-              targetHost:
-                description: TargetHost is a reference to the host where this VM should
-                  be placed.
-                properties:
-                  apiVersion:
-                    description: API version of the referent.
-                    type: string
-                  fieldPath:
-                    description: |-
-                      If referring to a piece of an object instead of an entire object, this string
-                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                      For example, if the object reference is to a container within a pod, this would take on a value like:
-                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                      the event) or if no container name is specified "spec.containers[2]" (container with
-                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                      referencing a part of an object.
-                    type: string
-                  kind:
-                    description: |-
-                      Kind of the referent.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                    type: string
-                  name:
-                    description: |-
-                      Name of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                    type: string
-                  resourceVersion:
-                    description: |-
-                      Specific resourceVersion to which this reference is made, if any.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                    type: string
-                  uid:
-                    description: |-
-                      UID of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
             required:
             - az
             - nova
@@ -384,8 +355,13 @@ spec:
             description: VMStatus defines the observed state of a VirtualMachine.
             properties:
               conditions:
-                description: Conditions holds standard Kubernetes conditions for this
-                  VM.
+                description: |-
+                  Conditions are exclusively reconciled and owned by the vm operator.
+                  They reflect the current state of the VM as observed by the operator.
+
+                  If no conditions are set, the operator has not yet recorded observations.
+                  This includes resources just scheduled for the first time by Cortex.
+                  See the cortex spec for scheduling details.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -533,7 +509,6 @@ spec:
     selectableFields:
     - jsonPath: .spec.region
     - jsonPath: .spec.az
-    - jsonPath: .spec.targetHost.name
     - jsonPath: .status.host.name
     served: true
     storage: true

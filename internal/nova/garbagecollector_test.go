@@ -239,7 +239,7 @@ func TestGarbageCollector_keepsGoneServerWithinOrphanTTL(t *testing.T) {
 	}
 }
 
-// A VM whose last sync FAILED (NovaSynced=False/SyncError) is never pruned,
+// A VM whose last sync FAILED (NovaSynced=False/Failed) is never pruned,
 // regardless of age: Nova's view is unknown, so the server may still exist. This
 // is the API-outage safety property — a 401/503 must not cascade into deletion.
 func TestGarbageCollector_neverPrunesWhenSyncFailing(t *testing.T) {
@@ -252,7 +252,7 @@ func TestGarbageCollector_neverPrunesWhenSyncFailing(t *testing.T) {
 	meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
 		Type:    v1alpha1.ConditionTypeNovaSynced,
 		Status:  metav1.ConditionFalse,
-		Reason:  v1alpha1.ConditionReasonNovaSyncedError,
+		Reason:  v1alpha1.ConditionReasonNovaSyncedFailed,
 		Message: "nova unreachable",
 	})
 	c := &GarbageCollector{Client: newTestClient(t, scheme, vm), Scheme: scheme}
@@ -371,7 +371,7 @@ func TestGarbageCollector_watchPredicate_ignoresDeletionTimeWrites(t *testing.T)
 		meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
 			Type:   v1alpha1.ConditionTypeNovaSynced,
 			Status: metav1.ConditionTrue,
-			Reason: v1alpha1.ConditionReasonNovaSyncedUpToDate,
+			Reason: v1alpha1.ConditionReasonNovaSyncedOK,
 		})
 		return vm
 	}

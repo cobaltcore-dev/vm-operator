@@ -279,7 +279,7 @@ func TestController_Reconcile_usesServerGet(t *testing.T) {
 	if got.Status.Nova == nil || got.Status.Nova.Status != "ACTIVE" || got.Status.Nova.Host != "compute-1" {
 		t.Errorf("status.nova = %+v, want ACTIVE on compute-1", got.Status.Nova)
 	}
-	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
+	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedOK)
 }
 
 func TestController_Reconcile_syncsExistingVM(t *testing.T) {
@@ -317,7 +317,7 @@ func TestController_Reconcile_syncsExistingVM(t *testing.T) {
 	if got.Status.Nova.LastSyncTime == nil {
 		t.Error("expected LastSyncTime to be stamped on sync")
 	}
-	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
+	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedOK)
 }
 
 // TestController_Reconcile_preservesCortexSpec verifies the full update path (the
@@ -429,9 +429,6 @@ func TestController_Reconcile_createsMissingVM(t *testing.T) {
 	if got.Spec.HypervisorType == nil || *got.Spec.HypervisorType != v1alpha1.HypervisorTypeQEMU {
 		t.Errorf("spec.hypervisorType = %v, want QEMU", got.Spec.HypervisorType)
 	}
-	if got.Spec.TargetHost == nil || got.Spec.TargetHost.Name != "compute-1" {
-		t.Errorf("spec.targetHost = %+v, want name compute-1", got.Spec.TargetHost)
-	}
 	cpu := got.Spec.Resources[v1alpha1.ResourceCPU]
 	if cpu.Value() != 4 {
 		t.Errorf("spec.resources[cpu] = %s, want 4", cpu.String())
@@ -447,7 +444,7 @@ func TestController_Reconcile_createsMissingVM(t *testing.T) {
 	if got.Spec.Nova.Flavor.ExtraSpecs[hypervisorTypeExtraSpec] != "qemu" {
 		t.Errorf("spec.nova.flavor.extraSpecs = %+v, want hypervisor type qemu", got.Spec.Nova.Flavor.ExtraSpecs)
 	}
-	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedUpToDate)
+	assertSyncedCondition(t, &got, metav1.ConditionTrue, v1alpha1.ConditionReasonNovaSyncedOK)
 }
 
 func TestController_Reconcile_skipsCreateWithoutAZ(t *testing.T) {
@@ -655,7 +652,7 @@ func TestController_Reconcile_recordsFetchFailure(t *testing.T) {
 	}
 
 	got := getVM(t, c)
-	assertSyncedCondition(t, &got, metav1.ConditionFalse, v1alpha1.ConditionReasonNovaSyncedError)
+	assertSyncedCondition(t, &got, metav1.ConditionFalse, v1alpha1.ConditionReasonNovaSyncedFailed)
 }
 
 func TestController_Reconcile_bothMissingIsNoop(t *testing.T) {
