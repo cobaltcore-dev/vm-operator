@@ -110,9 +110,9 @@ func TestPatchInto_preservesDomain(t *testing.T) {
 // Cortex subspec, which the Cortex placement API owns.
 func TestPatchInto_preservesCortex(t *testing.T) {
 	cortex := &v1alpha1.CortexSpec{
-		HostCandidates:     []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-1"}},
-		LastTransitionTime: new(metav1.Now()),
-		ObservedGeneration: 3,
+		SchedulingCandidates: []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-1"}},
+		SchedulingTime:       new(metav1.Now()),
+		ScheduledGeneration:  3,
 	}
 	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: "a"}}
 	vm.Spec.Cortex = cortex

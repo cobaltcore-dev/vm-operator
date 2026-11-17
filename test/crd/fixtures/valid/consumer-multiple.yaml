@@ -22,9 +22,9 @@ spec:
     image:
       uuid: 22222222-2222-2222-2222-222222222222
   cortex:
-    intent: live-migration
-    lastTransitionTime: "2026-11-16T10:00:00Z"
-    observedGeneration: 3
+    schedulingIntent: live-migration
+    schedulingTime: "2026-11-16T10:00:00Z"
+    scheduledGeneration: 3
     consumers:
       - uuid: 63ed64e2-27a2-4b70-9b5c-833c2a285d66
         generation: 5

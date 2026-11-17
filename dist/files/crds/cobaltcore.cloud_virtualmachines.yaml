@@ -155,15 +155,16 @@ spec:
                       - uuid
                       type: object
                     type: array
-                  explanation:
-                    description: |-
-                      Explanation is a human-readable explanation of the scheduling decision
-                      made by Cortex.
-                    type: string
-                  hostCandidates:
-                    description: HostCandidates is the set of host references Cortex
-                      has considered for the most recent scheduling operation of the
-                      VM.
+                  scheduledGeneration:
+                    description: ScheduledGeneration is the last generation observed
+                      by cortex for this VM.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  schedulingCandidates:
+                    description: SchedulingCandidates is the set of host references
+                      Cortex has considered for the most recent scheduling operation
+                      of the VM.
                     items:
                       description: ObjectReference contains enough information to
                         let you inspect or modify the referred object.
@@ -209,25 +210,30 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     type: array
-                  intent:
+                  schedulingError:
                     description: |-
-                      Intent is the last operation performed on this virtual machine,
+                      SchedulingError is a human-readable explanation of the scheduling error,
+                      if any occurred. Typically, this is non-empty when the set of scheduling
+                      candidates is empty.
+                    type: string
+                  schedulingExplanation:
+                    description: |-
+                      SchedulingExplanation is a human-readable explanation of the scheduling decision
+                      made by Cortex.
+                    type: string
+                  schedulingIntent:
+                    description: |-
+                      SchedulingIntent is the last operation performed on this virtual machine,
                       e.g. initial placement, evacuation, live-migration, rebuild, etc.
                       This is an information provided by Nova to Cortex, but it is
                       persisted nowhere inside the Nova database, so Cortex propagates
                       this information into the CortexSpec.
                     type: string
-                  lastTransitionTime:
-                    description: LastTransitionTime is the timestamp of the last transition
+                  schedulingTime:
+                    description: SchedulingTime is the timestamp of the last transition
                       of the VM's intent.
                     format: date-time
                     type: string
-                  observedGeneration:
-                    description: ObservedGeneration is the last generation observed
-                      by cortex for this VM.
-                    format: int64
-                    minimum: 0
-                    type: integer
                 type: object
               hypervisorType:
                 description: HypervisorType is the hypervisor type of the host where
@@ -358,7 +364,7 @@ spec:
 
                   If no conditions are set, the operator has not yet recorded observations.
                   This includes resources just scheduled for the first time by Cortex.
-                  See the cortex spec for scheduling details.
+                  See the CortexSpec for scheduling details.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

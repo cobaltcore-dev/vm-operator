@@ -331,7 +331,7 @@ func TestController_Reconcile_preservesCortexSpec(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.VMSpec{
 			Cortex: &v1alpha1.CortexSpec{
-				HostCandidates: []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-9"}},
+				SchedulingCandidates: []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-9"}},
 			},
 		},
 	}
@@ -360,8 +360,8 @@ func TestController_Reconcile_preservesCortexSpec(t *testing.T) {
 	if got.Spec.Cortex == nil {
 		t.Fatal("spec.cortex was cleared by the nova sync")
 	}
-	if len(got.Spec.Cortex.HostCandidates) != 1 || got.Spec.Cortex.HostCandidates[0].Name != "compute-9" {
-		t.Errorf("spec.cortex.hostCandidates = %+v, want the seeded compute-9", got.Spec.Cortex.HostCandidates)
+	if len(got.Spec.Cortex.SchedulingCandidates) != 1 || got.Spec.Cortex.SchedulingCandidates[0].Name != "compute-9" {
+		t.Errorf("spec.cortex.schedulingCandidates = %+v, want the seeded compute-9", got.Spec.Cortex.SchedulingCandidates)
 	}
 }
 

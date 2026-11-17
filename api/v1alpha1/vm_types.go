@@ -363,10 +363,6 @@ type PlacementConsumer struct {
 
 // CortexSpec captures the desired state of this VM in Cortex.
 type CortexSpec struct {
-	// HostCandidates is the set of host references Cortex has considered for the most recent scheduling operation of the VM.
-	// +kubebuilder:validation:Optional
-	HostCandidates []corev1.ObjectReference `json:"hostCandidates,omitempty"`
-
 	// Consumers contains OpenStack Placement API consumers related to this VM.
 	// This includes the instance consumer and, if applicable, a migration consumer.
 	// If the VM has been created freshly, this list may be empty until the first
@@ -374,27 +370,32 @@ type CortexSpec struct {
 	// +kubebuilder:validation:Optional
 	Consumers []PlacementConsumer `json:"consumers,omitempty"`
 
-	// Explanation is a human-readable explanation of the scheduling decision
+	// SchedulingCandidates is the set of host references Cortex has considered for the most recent scheduling operation of the VM.
+	// +kubebuilder:validation:Optional
+	SchedulingCandidates []corev1.ObjectReference `json:"schedulingCandidates,omitempty"`
+	// SchedulingError is a human-readable explanation of the scheduling error,
+	// if any occurred. Typically, this is non-empty when the set of scheduling
+	// candidates is empty.
+	// +kubebuilder:validation:Optional
+	SchedulingError string `json:"schedulingError,omitempty"`
+	// SchedulingExplanation is a human-readable explanation of the scheduling decision
 	// made by Cortex.
 	// +kubebuilder:validation:Optional
-	Explanation string `json:"explanation,omitempty"`
-
-	// Intent is the last operation performed on this virtual machine,
+	SchedulingExplanation string `json:"schedulingExplanation,omitempty"`
+	// SchedulingIntent is the last operation performed on this virtual machine,
 	// e.g. initial placement, evacuation, live-migration, rebuild, etc.
 	// This is an information provided by Nova to Cortex, but it is
 	// persisted nowhere inside the Nova database, so Cortex propagates
 	// this information into the CortexSpec.
 	// +kubebuilder:validation:Optional
-	Intent string `json:"intent,omitempty"`
-
-	// LastTransitionTime is the timestamp of the last transition of the VM's intent.
+	SchedulingIntent string `json:"schedulingIntent,omitempty"`
+	// SchedulingTime is the timestamp of the last transition of the VM's intent.
 	// +kubebuilder:validation:Optional
-	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty"`
-
-	// ObservedGeneration is the last generation observed by cortex for this VM.
+	SchedulingTime *metav1.Time `json:"schedulingTime,omitempty"`
+	// ScheduledGeneration is the last generation observed by cortex for this VM.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Minimum=0
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	ScheduledGeneration int64 `json:"scheduledGeneration,omitempty"`
 }
 
 // VMStatus defines the observed state of a VirtualMachine.
@@ -424,7 +425,7 @@ type VMStatus struct {
 	//
 	// If no conditions are set, the operator has not yet recorded observations.
 	// This includes resources just scheduled for the first time by Cortex.
-	// See the cortex spec for scheduling details.
+	// See the CortexSpec for scheduling details.
 	//
 	// +listType=map
 	// +listMapKey=type
