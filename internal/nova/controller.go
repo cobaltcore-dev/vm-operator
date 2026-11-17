@@ -142,7 +142,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			meta.SetStatusCondition(&vm.Status.Conditions, metav1.Condition{
 				Type:    v1alpha1.ConditionTypeNovaSynced,
 				Status:  metav1.ConditionFalse,
-				Reason:  v1alpha1.ConditionReasonNovaSyncedError,
+				Reason:  v1alpha1.ConditionReasonNovaSyncedFailed,
 				Message: err.Error(),
 			})
 			if perr := c.Status().Patch(ctx, &vm, client.MergeFrom(base)); perr != nil {
@@ -227,7 +227,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		meta.SetStatusCondition(&created.Status.Conditions, metav1.Condition{
 			Type:    v1alpha1.ConditionTypeNovaSynced,
 			Status:  metav1.ConditionTrue,
-			Reason:  v1alpha1.ConditionReasonNovaSyncedUpToDate,
+			Reason:  v1alpha1.ConditionReasonNovaSyncedOK,
 			Message: "resource created from nova state",
 		})
 		if err := c.Status().Update(ctx, created); err != nil {
@@ -246,7 +246,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// NovaSynced condition, so operators can still see what the VM was). LastSyncTime,
 	// conditions and Status.Host are preserved either way.
 	base := vm.DeepCopy()
-	reason, message := v1alpha1.ConditionReasonNovaSyncedUpToDate, "resource reflects the current nova state"
+	reason, message := v1alpha1.ConditionReasonNovaSyncedOK, "resource reflects the current nova state"
 	outcome := outcomeSynced
 	var requeueAfter time.Duration
 	var changed bool

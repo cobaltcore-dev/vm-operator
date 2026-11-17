@@ -93,11 +93,26 @@ func TestPatchInto_preservesLastSyncTime(t *testing.T) {
 	}
 }
 
+func TestPatchInto_preservesDomain(t *testing.T) {
+	vm := &v1alpha1.VirtualMachine{}
+	vm.Spec.Nova.Ownership.Domain = "domain-uuid"
+	conv := mustConvert(t, fullServer(), qemuFlavor("flavor-uuid", 1, 1))
+	conv.PatchInto(vm)
+	if vm.Spec.Nova.Ownership.Domain != "domain-uuid" {
+		t.Errorf("domain = %q, want domain-uuid", vm.Spec.Nova.Ownership.Domain)
+	}
+	if conv.HasChanged(vm) {
+		t.Error("a domain unknown to Nova must not trigger repeated syncs")
+	}
+}
+
 // TestPatchInto_preservesCortex locks in that the Nova sync never clobbers the
 // Cortex subspec, which the Cortex placement API owns.
 func TestPatchInto_preservesCortex(t *testing.T) {
 	cortex := &v1alpha1.CortexSpec{
-		HostCandidates: []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-1"}},
+		SchedulingCandidates: []corev1.ObjectReference{{Kind: "Hypervisor", Name: "compute-1"}},
+		SchedulingTime:       new(metav1.Now()),
+		ScheduledGeneration:  3,
 	}
 	vm := &v1alpha1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: "a"}}
 	vm.Spec.Cortex = cortex
@@ -151,9 +166,6 @@ func TestConvertToVirtualMachine_setsNameAndImmutableSpec(t *testing.T) {
 	}
 	if vm.Spec.HypervisorType == nil || *vm.Spec.HypervisorType != v1alpha1.HypervisorTypeQEMU {
 		t.Errorf("hypervisorType = %v, want QEMU", vm.Spec.HypervisorType)
-	}
-	if vm.Spec.TargetHost == nil || vm.Spec.TargetHost.Name != "compute-1" {
-		t.Errorf("targetHost = %+v", vm.Spec.TargetHost)
 	}
 	// The nova host goes to Status.Nova.Host; Status.Host (runtime host) is owned elsewhere.
 	if vm.Status.Nova == nil || vm.Status.Nova.Host != "compute-1" {

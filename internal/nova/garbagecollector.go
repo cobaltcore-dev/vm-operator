@@ -188,7 +188,7 @@ func (c *GarbageCollector) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// scheduled deletion. Dispatch on the NovaSynced condition, which records the
 	// outcome of the last sync attempt:
 	//
-	//   - False (SyncError): the last fetch failed (Nova unreachable, 401/503,
+	//   - False (Failed): the last fetch failed (Nova unreachable, 401/503,
 	//     transport error), so we do NOT know Nova's current view — the server may
 	//     well still exist. Never prune; leave it for the sync controller to retry.
 	//   - True / ServerGone: a sync succeeded and Nova no longer knows the server.
@@ -246,7 +246,7 @@ func (c *GarbageCollector) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// is gone — it may exist while the sync is pending. Never prune; requeue on the
 	// OrphanTTL clock so it remains a re-evaluated candidate until the sync
 	// controller records an outcome (ServerGone, which authorises the prune above,
-	// or SyncError / UpToDate, both handled earlier).
+	// or Failed / OK, both handled earlier).
 	notYetSynced := synced == nil && (vm.Status.Nova == nil || vm.Status.Nova.Status == "")
 	if notYetSynced {
 		age := now.Sub(vm.CreationTimestamp.Time)

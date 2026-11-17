@@ -21,13 +21,13 @@ const (
 
 // Label keys set on VirtualMachine objects.
 const (
-	// LabelRegion is the cloud region. Immutable.
+	// LabelRegion is the OpenStack region within which this vm is hosted.
+	// Once set, this label is intended to stay stable over the entire lifetime.
 	LabelRegion = "cobaltcore.cloud/region"
-	// LabelAZ is the availability zone. Immutable.
+	// LabelAZ is the availability zone within which this vm is hosted.
+	// Once set, this label is intended to stay stable over the entire lifetime.
 	LabelAZ = "cobaltcore.cloud/az"
 
-	// LabelTargetHost is the host where the VM should be placed on (spec).
-	LabelTargetHost = "cobaltcore.cloud/target-host"
 	// LabelHost is the host the VM is currently observed on (status).
 	LabelHost = "cobaltcore.cloud/host"
 )
@@ -36,122 +36,140 @@ const (
 type VMConditionType = string
 
 const (
-	// ConditionTypeScheduled is set by Cortex after each scheduling operation.
-	// status=Unknown: scheduling in-flight.
-	// status=True: scheduling succeeded, one or multiple candidates found.
-	// status=False: scheduling failed, see reason and message.
-	ConditionTypeScheduled VMConditionType = "Scheduled"
-
-	// ConditionTypeRunning is set by the VM operator when the VM domain is executing on a host.
-	// status=True: domain running, including during live migration or resize.
-	// status=False: domain paused, shut off, crashed, or not found.
-	// status=Unknown: exporter cannot reach the host.
+	// ConditionTypeRunning indicates if the virtual machine is observed to
+	// be running on its current host, according to authoritative datasources.
+	// - status=True: the vm is running.
+	// - status=False: the vm is not running. This can be the case if the vm is
+	//   turned off, failed, or crashed, but it still exists in the system.
+	//   See ConditionTypeDeleted for more details on the deletion state.
+	// - status=Unknown: there is a conflicting state between authoritative
+	//   datasources — the operator cannot determine the running state reliably.
 	ConditionTypeRunning VMConditionType = "Running"
 
-	// ConditionTypeMigrating is set by the VM operator during a live migration.
-	// status=True: migration in progress or aborting.
-	// status=False: migration completed, rolled back, or failed.
-	// status=Unknown: VM visible on multiple hosts, state unclear.
+	// ConditionTypeDeleted indicates if the virtual machine has been deleted,
+	// i.e. it no longer runs AND it has been removed from the system.
+	// See ConditionTypeRunning.
+	// - status=True: the vm has been deleted from all datasources and can
+	//   be pruned from k8s.
+	// - status=False: the vm still exists, or deletion failed.
+	// - status=Unknown: it is unclear whether the VM has been fully deleted
+	//   because there are conflicting observations from authoritative
+	//   datasources. This may just indicate the deletion is still ongoing.
+	ConditionTypeDeleted VMConditionType = "Deleted"
+
+	// ConditionTypeMigrating indicates if the virtual machine is currently
+	// undergoing a migration: a live migration or a cold-migration such as
+	// an evacuation.
+	// - status=True: the vm is currently undergoing a migration. See the
+	//   reason and message for details.
+	// - status=False: the vm is not migrating, either because it was never
+	//   migrated or a previous migration has completed. See the reason.
+	// - status=Unknown: it is unclear whether the VM is currently undergoing a
+	//   migration because there are conflicting observations from
+	//   authoritative datasources.
 	ConditionTypeMigrating VMConditionType = "Migrating"
 
-	// ConditionTypeResizing is set by the VM operator during a resize operation.
-	// status=True: resize in progress or being reverted.
-	// status=False: resize completed, reverted, or failed.
-	// status=Unknown: resize state unclear.
+	// ConditionTypeResizing indicates if the virtual machine is currently
+	// changing its allocated resources (CPU, memory, etc.), known as a resize
+	// operation.
+	// - status=True: the vm is currently undergoing a resize operation.
+	// - status=False: the vm is not currently undergoing a resize operation,
+	//   either because it completed, was reverted, or failed.
+	// - status=Unknown: it is unclear whether the VM is currently undergoing a
+	//   resize operation because there are conflicting observations from
+	//   authoritative datasources.
 	ConditionTypeResizing VMConditionType = "Resizing"
 
-	// ConditionTypeNovaInSync is set by the VM operator to record if the libvirt-observed state is consistent with what Nova reports.
-	// status=True: host and state consistent.
-	// status=False: mismatch detected — see reason and message.
-	// status=Unknown: not yet checked.
-	ConditionTypeNovaInSync VMConditionType = "NovaInSync"
-
-	// ConditionTypeNovaSynced is set by the Nova sync controller to record the
-	// outcome of reflecting Nova's view of the server onto this resource.
+	// ConditionTypeNovaSynced indicates if the resource reflects the latest
+	// successful Nova fetch.
 	// status=True: the resource reflects the latest successful Nova fetch.
 	// status=False: the most recent sync failed — see reason and message.
 	// status=Unknown: not yet synced.
 	ConditionTypeNovaSynced VMConditionType = "NovaSynced"
 
-	// ConditionTypeTerminating is set by the VM operator when deletion is detected on either side.
-	// Absent when the VM is not being deleted.
-	// status=False: deletion observed on one side only — possible false positive or waiting for the other side to catch up.
-	// status=True: both libvirt and Nova agree the VM is gone; CRD is held by finalizers pending cleanup.
-	ConditionTypeTerminating VMConditionType = "Terminating"
+	// ConditionTypeLibvirtSynced indicates if the resource reflects the latest
+	// successful Libvirt state.
+	// status=True: the resource reflects the latest successful Libvirt fetch.
+	// status=False: the most recent sync failed — see reason and message.
+	// status=Unknown: not yet synced.
+	ConditionTypeLibvirtSynced VMConditionType = "LibvirtSynced"
 )
 
 // Reasons for ConditionTypeRunning.
 const (
-	ConditionReasonRunningShutoff  = "Shutoff"
-	ConditionReasonRunningCrashed  = "Crashed"
-	ConditionReasonRunningPaused   = "Paused"
+	// ConditionReasonRunningOK is set when the VM is running normally.
+	ConditionReasonRunningOK = "OK"
+	// ConditionReasonRunningShutoff is set when the VM is in the shutoff state.
+	ConditionReasonRunningShutoff = "Shutoff"
+	// ConditionReasonRunningCrashed is set when the VM has crashed.
+	ConditionReasonRunningCrashed = "Crashed"
+	// ConditionReasonRunningPaused is set when the VM is paused.
+	ConditionReasonRunningPaused = "Paused"
+	// ConditionReasonRunningNotFound is set when the VM cannot be found.
 	ConditionReasonRunningNotFound = "NotFound"
+)
+
+// Reasons for ConditionTypeDeleted.
+const (
+	// ConditionReasonDeletedReady is set when the VM has been deleted
+	// normally.
+	ConditionReasonDeletedReady = "Ready"
+	// ConditionReasonDeletedLibvirtGone is set when libvirt no longer
+	// observes the VM but Nova still reports it as running.
+	ConditionReasonDeletedLibvirtGone = "LibvirtGone"
+	// ConditionReasonDeletedNovaGone is set when Nova reports the VM
+	// as deleted but libvirt still observes it.
+	ConditionReasonDeletedNovaGone = "NovaGone"
+	// ConditionReasonDeletedNovaError is set when the VM deletion has
+	// failed due to a Nova error.
+	ConditionReasonDeletedNovaError = "NovaError"
 )
 
 // Reasons for ConditionTypeMigrating.
 const (
-	ConditionReasonMigratingOngoing    = "Ongoing"
-	ConditionReasonMigratingAborting   = "Aborting"
-	ConditionReasonMigratingCompleted  = "Completed"
-	ConditionReasonMigratingRolledBack = "RolledBack"
-	ConditionReasonMigratingFailed     = "Failed"
+	// ConditionReasonMigratingLiveInProgress is set when the VM is being
+	// live migrated.
+	ConditionReasonMigratingLiveInProgress = "LiveInProgress"
+	// ConditionReasonMigratingColdInProgress is set when the VM is being
+	// cold migrated.
+	ConditionReasonMigratingColdInProgress = "ColdInProgress"
+	// ConditionReasonMigratingNovaError is set when the VM migration has
+	// failed due to a Nova error.
+	ConditionReasonMigratingNovaError = "NovaError"
 )
 
 // Reasons for ConditionTypeResizing.
 const (
-	ConditionReasonResizingOngoing   = "Ongoing"
-	ConditionReasonResizingReverting = "Reverting"
-	ConditionReasonResizingCompleted = "Completed"
-	ConditionReasonResizingReverted  = "Reverted"
-	ConditionReasonResizingFailed    = "Failed"
+	// ConditionReasonResizingInProgress is set when the VM is being resized
+	// normally.
+	ConditionReasonResizingInProgress = "InProgress"
+	// ConditionReasonResizingNovaError is set when the VM resize has
+	// failed due to a Nova error.
+	ConditionReasonResizingNovaError = "NovaError"
 )
 
-// Reasons for ConditionTypeNovaInSync.
+// Reasons for ConditionTypeLibvirtSynced.
 const (
-	ConditionReasonNovaInSyncHostMismatch  = "HostMismatch"
-	ConditionReasonNovaInSyncStateMismatch = "StateMismatch"
-	ConditionReasonNovaInSyncUnreachable   = "NovaUnreachable"
+	// ConditionReasonLibvirtSyncedOK is set when the VM's libvirt state is
+	// successfully synced.
+	ConditionReasonLibvirtSyncedOK = "OK"
+	// ConditionReasonLibvirtSyncedFailed is set when the VM's libvirt state
+	// failed to sync due to an error.
+	ConditionReasonLibvirtSyncedFailed = "Failed"
 )
 
 // Reasons for ConditionTypeNovaSynced.
 const (
-	// ConditionReasonNovaSyncedUpToDate is set when the resource was
-	// successfully reconciled against Nova's current view of the server,
-	// including when Nova reports the server as gone.
-	ConditionReasonNovaSyncedUpToDate = "UpToDate"
-	// ConditionReasonNovaSyncedGone is set when a sync succeeded but Nova no
-	// longer knows the server. The last-known Nova-derived fields are retained on
-	// the resource; this reason is the sole record that the server is gone.
+	// ConditionReasonNovaSyncedOK is set when the VM's Nova state is
+	// successfully synced.
+	ConditionReasonNovaSyncedOK = "OK"
+	// ConditionReasonNovaSyncedGone is set when a successful Nova lookup confirms
+	// the server is absent. Last-known Nova fields are retained; this does not
+	// imply that libvirt has also confirmed deletion.
 	ConditionReasonNovaSyncedGone = "ServerGone"
-	// ConditionReasonNovaSyncedError is set when the sync failed, e.g. Nova was
-	// unreachable.
-	ConditionReasonNovaSyncedError = "SyncError"
-)
-
-// Reasons for ConditionTypeTerminating.
-const (
-	// ConditionReasonTerminatingLibvirtGone is set when libvirt no longer observes the VM but Nova still reports it as running.
-	ConditionReasonTerminatingLibvirtGone = "LibvirtGone"
-	// ConditionReasonTerminatingNovaGone is set when Nova reports the VM as deleted but libvirt still observes it.
-	ConditionReasonTerminatingNovaGone = "NovaGone"
-	// ConditionReasonTerminatingConfirmed is set when both libvirt and Nova agree the VM is gone.
-	ConditionReasonTerminatingConfirmed = "Confirmed"
-)
-
-// Reasons for ConditionTypeScheduled. Note that these are only the explicitly
-// listed reasons, and other reasons may be provided by the condition writer.
-const (
-	// Operation type reasons — set on both success and failure of a scheduling call.
-	ConditionReasonScheduledInitialPlacement = "InitialPlacement"
-	ConditionReasonScheduledLiveMigration    = "LiveMigration"
-	ConditionReasonScheduledEvacuation       = "Evacuation"
-	ConditionReasonScheduledResize           = "Resize"
-	ConditionReasonScheduledRebuild          = "Rebuild"
-
-	// Failure reasons — set on status=False.
-	ConditionReasonScheduledNoHostFound = "NoHostFound"
-	ConditionReasonScheduledTimeout     = "Timeout"
-	ConditionReasonScheduledError       = "Error"
+	// ConditionReasonNovaSyncedFailed is set when the VM's Nova state
+	// failed to sync due to an error.
+	ConditionReasonNovaSyncedFailed = "Failed"
 )
 
 // HostRef is a reference to a v1.Hypervisor.
@@ -173,7 +191,7 @@ const (
 // Region, AZ, and Resources are populated at creation time either by the Cortex
 // placement API (at scheduling time) or by the vm-operator's Nova sync
 // controller (when it adopts a pre-existing Nova server that has no CRD yet).
-// Both write the same create-time values; the fields are immutable thereafter.
+// Region and AZ are immutable thereafter; Resources may change on resize.
 type VMSpec struct {
 	// Region is the cloud region this VM is placed in.
 	// Set once at creation by the Cortex placement API or the vm-operator's
@@ -188,10 +206,6 @@ type VMSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="az is immutable"
 	AZ string `json:"az"`
-
-	// TargetHost is a reference to the host where this VM should be placed.
-	// +kubebuilder:validation:Optional
-	TargetHost *HostRef `json:"targetHost,omitempty"`
 
 	// HypervisorType is the hypervisor type of the host where this VM should be placed.
 	// +kubebuilder:validation:Optional
@@ -224,7 +238,7 @@ type NovaSpec struct {
 	// +kubebuilder:validation:Optional
 	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
 
-	// Ownership identifies the OpenStack project and user owning this VM.
+	// Ownership identifies the OpenStack project, user, and domain owning this VM.
 	// +kubebuilder:validation:Required
 	Ownership Ownership `json:"ownership"`
 
@@ -242,7 +256,7 @@ type NovaSpec struct {
 	InstanceGroup *InstanceGroup `json:"instanceGroup,omitempty"`
 }
 
-// Ownership identifies the OpenStack project and user that own a VM.
+// Ownership identifies the OpenStack project, user, and domain that own a VM.
 type Ownership struct {
 	// Project is the OpenStack project (tenant) UUID.
 	// +kubebuilder:validation:Required
@@ -251,6 +265,10 @@ type Ownership struct {
 	// User is the OpenStack user UUID that created the VM.
 	// +kubebuilder:validation:Optional
 	User string `json:"user,omitempty"`
+
+	// Domain is the OpenStack domain UUID that owns the project, when known.
+	// +kubebuilder:validation:Optional
+	Domain string `json:"domain,omitempty"`
 }
 
 // Flavor describes the Nova flavor of a VM.
@@ -345,10 +363,6 @@ type PlacementConsumer struct {
 
 // CortexSpec captures the desired state of this VM in Cortex.
 type CortexSpec struct {
-	// HostCandidates is the set of host references Cortex has considered for the most recent scheduling operation of the VM.
-	// +kubebuilder:validation:Optional
-	HostCandidates []corev1.ObjectReference `json:"hostCandidates,omitempty"`
-
 	// Consumers contains OpenStack Placement API consumers related to this VM.
 	// This includes the instance consumer and, if applicable, a migration consumer.
 	// If the VM has been created freshly, this list may be empty until the first
@@ -356,18 +370,32 @@ type CortexSpec struct {
 	// +kubebuilder:validation:Optional
 	Consumers []PlacementConsumer `json:"consumers,omitempty"`
 
-	// Explanation is a human-readable explanation of the scheduling decision
+	// SchedulingCandidates is the set of host references Cortex has considered for the most recent scheduling operation of the VM.
+	// +kubebuilder:validation:Optional
+	SchedulingCandidates []corev1.ObjectReference `json:"schedulingCandidates,omitempty"`
+	// SchedulingError is a human-readable explanation of the scheduling error,
+	// if any occurred. Typically, this is non-empty when the set of scheduling
+	// candidates is empty.
+	// +kubebuilder:validation:Optional
+	SchedulingError string `json:"schedulingError,omitempty"`
+	// SchedulingExplanation is a human-readable explanation of the scheduling decision
 	// made by Cortex.
 	// +kubebuilder:validation:Optional
-	Explanation string `json:"explanation,omitempty"`
-
-	// Intent is the last operation performed on this virtual machine,
+	SchedulingExplanation string `json:"schedulingExplanation,omitempty"`
+	// SchedulingIntent is the last operation performed on this virtual machine,
 	// e.g. initial placement, evacuation, live-migration, rebuild, etc.
 	// This is an information provided by Nova to Cortex, but it is
 	// persisted nowhere inside the Nova database, so Cortex propagates
 	// this information into the CortexSpec.
 	// +kubebuilder:validation:Optional
-	Intent string `json:"intent,omitempty"`
+	SchedulingIntent string `json:"schedulingIntent,omitempty"`
+	// SchedulingTime is the timestamp of the last transition of the VM's intent.
+	// +kubebuilder:validation:Optional
+	SchedulingTime *metav1.Time `json:"schedulingTime,omitempty"`
+	// ScheduledGeneration is the last generation observed by cortex for this VM.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	ScheduledGeneration int64 `json:"scheduledGeneration,omitempty"`
 }
 
 // VMStatus defines the observed state of a VirtualMachine.
@@ -392,7 +420,13 @@ type VMStatus struct {
 	// +kubebuilder:validation:Optional
 	Libvirt *LibvirtStatus `json:"libvirt,omitempty"`
 
-	// Conditions holds standard Kubernetes conditions for this VM.
+	// Conditions are exclusively reconciled and owned by the vm operator.
+	// They reflect the current state of the VM as observed by the operator.
+	//
+	// If no conditions are set, the operator has not yet recorded observations.
+	// This includes resources just scheduled for the first time by Cortex.
+	// See the CortexSpec for scheduling details.
+	//
 	// +listType=map
 	// +listMapKey=type
 	// +kubebuilder:validation:Optional
@@ -431,13 +465,11 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:resource:scope=Cluster,shortName=vm
 // +kubebuilder:selectablefield:JSONPath=".spec.region"
 // +kubebuilder:selectablefield:JSONPath=".spec.az"
-// +kubebuilder:selectablefield:JSONPath=".spec.targetHost.name"
 // +kubebuilder:selectablefield:JSONPath=".status.host.name"
 // Default columns. The implicit NAME column already holds the Nova instance UUID.
 // +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.cpu",name="CPU",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.memory",name="Memory",type="string"
-// +kubebuilder:printcolumn:JSONPath=".spec.targetHost.name",name="TargetHost",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.host.name",name="ActualHost",type="string"
 // Wide-only columns (priority=1).
 // +kubebuilder:printcolumn:JSONPath=".status.nova.host",name="NovaHost",type="string",priority=1
