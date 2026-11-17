@@ -469,7 +469,6 @@ type LibvirtHostInfo struct{}
 // +kubebuilder:printcolumn:JSONPath=".spec.az",name="AZ",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.cpu",name="CPU",type="string"
 // +kubebuilder:printcolumn:JSONPath=".spec.resources.memory",name="Memory",type="string"
-// +kubebuilder:printcolumn:JSONPath=".metadata.labels.cobaltcore\\.cloud/target-host",name="TargetHost",type="string"
 // +kubebuilder:printcolumn:JSONPath=".status.host.name",name="ActualHost",type="string"
 // Wide-only columns (priority=1).
 // +kubebuilder:printcolumn:JSONPath=".status.nova.host",name="NovaHost",type="string",priority=1

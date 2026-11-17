@@ -26,9 +26,6 @@ spec:
     - jsonPath: .spec.resources.memory
       name: Memory
       type: string
-    - jsonPath: .metadata.labels.cobaltcore\.cloud/target-host
-      name: TargetHost
-      type: string
     - jsonPath: .status.host.name
       name: ActualHost
       type: string
